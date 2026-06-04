@@ -5,7 +5,7 @@ import { computeStat, statLabel } from "./lib/stats";
 import { sampleSpinner, makeDrawState, drawStacks, drawMixer, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
 import { DeviceCard } from "./components/devices";
 import { CopyColumnButton } from "./components/ui";
-import { EDAPlot, DotPlot, StatDefiner, StatDistPlot } from "./components/plots";
+import { EDAPlot, SampleResults, StatDefiner, StatDistPlot } from "./components/plots";
 
 export default function App() {
   // CSV / EDA dataset
@@ -223,31 +223,7 @@ export default function App() {
           <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>Sample Results</span>
           {sampleData.length > 0 && <span style={{ fontSize:11, color:"#aaa" }}>n = {sampleData.length}</span>}
         </div>
-        {sampleData.length > 0 ? (
-          <div style={{ display:"flex", gap:12, flexWrap:"wrap" }}>
-            <div style={{ flex:"2 1 340px", minWidth:260 }}>
-              <DotPlot data={sampleData} varNames={varNames} />
-            </div>
-            <div style={{ flex:"1 1 200px", minWidth:180, maxHeight:270, overflowY:"auto" }}>
-              <table style={{ borderCollapse:"collapse", width:"100%", fontSize:12 }}>
-                <thead>
-                  <tr style={{ background:"#f7f7fa" }}>
-                    {["_sample", ...varNames].map(c => <th key={c} style={{ padding:"5px 8px", textAlign:"left", fontWeight:600, color:"#555", borderBottom:"2px solid #eee", whiteSpace:"nowrap" }}>{c}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {sampleData.slice(-60).reverse().map((row, i) => (
-                    <tr key={i} style={{ background:i === 0 ? "#f0f4ff" : i % 2 ? "#fafafa" : "#fff" }}>
-                      {["_sample", ...varNames].map(c => <td key={c} style={{ padding:"3px 8px", borderBottom:"1px solid #f0f0f0", color:c === "_sample" ? "#bbb" : "#2c3e50" }}>{row[c]}</td>)}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ) : (
-          <div style={{ color:"#bbb", textAlign:"center", padding:24 }}>Press "Draw Sample" to begin</div>
-        )}
+        <SampleResults sampleData={sampleData} varNames={varNames} />
       </div>
 
       {/* Collect Statistics */}

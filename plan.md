@@ -136,27 +136,33 @@ Do the `components/` + `lib/` split now, as part of this phase.
       (tallest-column → `dotSpacing`) into `src/lib/` so all plots share them.
       → `lib/scale.js`; `DotPlot`, `StatDistPlot`, `EDAPlot` all re-pointed at it,
       verified pixel-identical (univariate, scatter+LS, sample dot plot).
-- [→] Factor a `Plot` component that takes `{ rows, headers, xVar, yVar, overlays,
-      width, onTrackStat? }` so EDA, Sample Results, and the distribution plot can all
-      mount it; re-point `EDAPlot` at it. **Deferred to the start of Phase 1** so the
-      prop boundary is designed against a real second consumer (Sample Results)
-      instead of guessed against EDA alone.
+- [x] Factor a `Plot` component (controls + plot body, no bundled table) so EDA,
+      Sample Results, and the distribution plot can all mount it; re-pointed `EDAPlot`
+      at it. Final boundary: `{ rows, headers, xVar, yVar, setXVar, setYVar, width? }`
+      — X/Y are *controlled* so a sibling data table can highlight the selected
+      columns; dot size + overlay toggles are Plot-local state. Done as part of Phase 1
+      against the real second consumer (Sample Results).
 - [x] **Module split + shared primitives done:** production build passes; app mounts
       with no console errors; the scale/dot-stacking duplication is gone. The unified
       `Plot` component is the one remaining Phase 0 item, folded into Phase 1 below.
 
-### Phase 1 — Sample Results layout flip (+ extract the `Plot` component)
-- [ ] **Factor the `Plot` component** (controls + plot body, no bundled data table)
+### Phase 1 — Sample Results layout flip (+ extract the `Plot` component) ✅
+- [x] **Factor the `Plot` component** (controls + plot body, no bundled data table)
       out of `EDAPlot`, designed against both EDA and Sample Results as consumers.
-      Re-point `EDAPlot` at it; the data table stays composed alongside by each
-      context. (This is the carried-over second half of Phase 0.)
-- [ ] Swap the flex order: table left, plot right.
-- [ ] Append new rows to the **bottom**; drop the `.reverse()`; auto-scroll table to
-      bottom as draws stream in.
-- [ ] Replace `DotPlot` usage with the shared plot component (overlay toggles
-      available).
-- [ ] **Done when:** Drawing a sample fills the table top→bottom and the plot
-      matches EDA styling.
+      Re-pointed `EDAPlot` at it; the data table stays composed alongside by each
+      context. (This is the carried-over second half of Phase 0.) → `Plot` in
+      `components/plots.jsx`.
+- [x] Swap the flex order: table left, plot right. New `SampleResults` component
+      mirrors the EDA layout (table left, `Plot` right).
+- [x] Append new rows to the **bottom**; dropped the `.reverse()`; the table scroll
+      view auto-follows to the bottom as draws stream in (caps the rendered rows at
+      the last 200 for perf).
+- [x] Replaced `DotPlot` usage with the shared `Plot` (overlay toggles available);
+      removed the now-dead `DotPlot`.
+- [x] **Done:** verified in `npm run dev` — a draw fills the table top→bottom
+      (# ascending, newest at bottom, auto-scrolled), table sits left of the plot,
+      EDA still renders (table left + SVG plot right, Mean overlay works), production
+      build passes, no console errors.
 
 ### Phase 2 — Tracked-statistic data model
 - [ ] Add `trackedStats` state (array of stat specs) + a `collectRows` accumulator

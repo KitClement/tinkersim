@@ -6,80 +6,253 @@ import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
 import { Sel, ChkLabel } from "./ui";
 
-function DotPlot({ data, varNames }) {
-  const [xVar, setXVar] = useState(varNames[0] || "");
-  const [yVar, setYVar] = useState("none");
-  const [colorVar, setColorVar] = useState("none");
+// ══════════════════════════════════════════════════════════════════════════════
+// PLOT — the shared, interactive plot primitive (controls + plot body, no table).
+// Used by both EDA and Sample Results. X/Y selection is *controlled* by the parent
+// so a sibling data table can highlight the selected columns; dot size and the stat
+// overlay toggles are local state. Renders the same four modes as the EDA plot:
+//   1) cat × cat grid   2) num × cat split dot plots
+//   3) single categorical bins   4) scatter / univariate numeric (SVG)
+// ══════════════════════════════════════════════════════════════════════════════
+function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width }) {
   const [dotSize, setDotSize] = useState(5);
-  useEffect(() => { if (varNames.length && !varNames.includes(xVar)) setXVar(varNames[0]); }, [varNames.join(",")]);
 
-  if (!data.length) return <div style={{ color:"#bbb", padding:24, textAlign:"center" }}>No data yet.</div>;
+  // Stat overlay toggles
+  const [showBox, setShowBox] = useState(false);
+  const [showMean, setShowMean] = useState(false);
+  const [showSD, setShowSD] = useState(false);
+  const [showLS, setShowLS] = useState(false);
+  const [showValues, setShowValues] = useState(false);
+  // Categorical cell labels
+  const [showCount, setShowCount] = useState(true);
+  const [showPct, setShowPct] = useState(false);
+  // Collapse high-cardinality categorical axes (>10 categories)
+  const [expandCats, setExpandCats] = useState(false);
 
-  const colorKeys = colorVar !== "none" ? [...new Set(data.map(r => r[colorVar]))].sort() : [];
-  const colorMap = {};
-  colorKeys.forEach((k, i) => { colorMap[k] = COLORS[i % COLORS.length]; });
+  const plotRef = useRef(null);
+  const measuredW = useContainerWidth(plotRef, 280, 760);
+  const plotW = width || measuredW;
 
-  const W = 500, H = 260, PL = 50, PR = 16, PT = 18, PB = 44, iW = W - PL - PR, iH = H - PT - PB, R = dotSize;
+  // Detect each column's type once per (rows, headers). colInfo[col] = {numeric,time}.
+  const colInfo = useMemo(() => {
+    const map = {};
+    headers.forEach(h => { map[h] = colKind(rows, h); });
+    return map;
+  }, [rows, headers]);
 
-  const buildScale = (vn, size) => {
-    const vals = data.map(r => r[vn]);
-    const numeric = vals.slice(0, 20).every(v => !isNaN(Number(v)));
-    return makeScale(vals, size, { numeric, toNumber: Number, pad: 0.05, tickCount: r => Math.min(7, Math.max(2, Math.ceil(r) + 1)), precision: 2 });
-  };
+  // Keep X/Y valid as the available columns change (callbacks into the parent's state)
+  useEffect(() => { if (headers.length && !headers.includes(xVar)) setXVar(headers[0]); }, [headers.join(",")]);
+  useEffect(() => { if (yVar !== "none" && (!headers.includes(yVar) || yVar === xVar)) setYVar("none"); }, [headers.join(","), xVar]);
 
-  const xS = buildScale(xVar, iW);
-  const yS = yVar !== "none" ? buildScale(yVar, iH) : null;
+  if (!rows.length) return <div style={{ color:"#bbb", padding:24, textAlign:"center" }}>No data yet.</div>;
+  if (!xVar) return null;
 
-  const xps = data.map(row => xS.scale(row[xVar]));
-  const yOffsets = yS ? null : stackDots(xps, R, iH, 1);
-  const dots = data.map((row, i) => {
-    const yp = yS ? iH - yS.scale(row[yVar]) : yOffsets[i];
-    const color = colorVar !== "none" ? (colorMap[row[colorVar]] || "#888") : "#3b82f6";
-    return { x: PL + xps[i], y: PT + yp, color };
+  const xInfo = colInfo[xVar] || { numeric:false, time:false };
+  const yInfo = (yVar !== "none" && colInfo[yVar]) || { numeric:false, time:false };
+  const xNumeric = xInfo.numeric, xTime = xInfo.time;
+  const yNumeric = yVar !== "none" && yInfo.numeric, yTime = yInfo.time;
+  const bivariate = yVar !== "none";
+
+  const W = plotW, PL = 56, PR = 20, PT = 20;
+  const iW = W - PL - PR, iH = 210; // plot area; footer height is computed below
+  const R = dotSize;
+
+  // ── Build scales (numeric / time only; categorical handled by cell plots) ──
+  const buildScale = (col, size, isNum, isTime) =>
+    makeScale(rows.map(r => r[col]), size, { numeric: isNum, time: isTime, toNumber: toNum, pad: 0.05, tickCount: 6, precision: 2 });
+
+  const xS = buildScale(xVar, iW, xNumeric, xTime);
+  const yS = bivariate ? buildScale(yVar, iH, yNumeric, yTime) : null;
+
+  // ── Compute dot positions ──
+  const valid = rows.filter(r => {
+    const xv = r[xVar];
+    if (xv === undefined || xv === "") return false;
+    if (bivariate && (r[yVar] === undefined || r[yVar] === "")) return false;
+    return true;
   });
-  const opacity = Math.min(0.9, Math.max(0.15, 80 / Math.sqrt(dots.length + 1)));
+  const xps = valid.map(r => xS.scale(r[xVar]));
+  const yOffsets = yS ? null : stackDots(xps, R, iH, 1);
+  const dots = valid.map((r, i) => ({
+    x: PL + xps[i],
+    y: PT + (yS ? iH - yS.scale(r[yVar]) : yOffsets[i]),
+  }));
+
+  // ── Univariate numeric summary (for box/mean/SD overlays) ──
+  const xNums = rows.map(r => toNum(r[xVar])).filter(v => !isNaN(v));
+  const xSummary = xNumeric ? numericSummary(xNums) : null;
+  const fmtX = xTime ? minutesToTime : (v => parseFloat(v.toFixed(2)));
+
+  // LS fit for bivariate numeric
+  let ls = null;
+  if (bivariate && xNumeric && yNumeric) {
+    const pairs = rows.map(r => ({ x: toNum(r[xVar]), y: toNum(r[yVar]) })).filter(p => !isNaN(p.x) && !isNaN(p.y));
+    ls = lsFit(pairs);
+  }
+
+  const sx = v => PL + xS.scale(v);
+  // Univariate numeric overlays hug the axis: the mean triangle's tip sits on the
+  // x-axis, the ±SD bar is directly beneath it (adjacent to the mean), and the
+  // boxplot is separated below. Tick labels sit below the strip.
+  const axisY = PT + iH;
+  const sdBarY = axisY + 7;        // ±SD bar runs through the mean triangle (centred on the mean)
+  const meanBaseY = axisY + 13;    // triangle base
+  const meanValY = axisY + 23;     // mean value, below the triangle
+  const boxCy = axisY + 38;        // boxplot centre, with room above + below for values
+  const medianValY = axisY + 59;   // median value, below the box
+  const hasUniOverlay = !bivariate && xSummary && (showBox || showMean || showSD);
+  let overlayBottom = axisY;
+  if (hasUniOverlay) {
+    if (showMean) overlayBottom = Math.max(overlayBottom, showValues ? meanValY : meanBaseY);
+    if (showSD) overlayBottom = Math.max(overlayBottom, sdBarY + 4);
+    if (showBox) overlayBottom = Math.max(overlayBottom, showValues ? medianValY : boxCy + 9);
+  }
+  const tickLblY = hasUniOverlay ? overlayBottom + 14 : axisY + 16;
+  const H = tickLblY + 18; // tick labels + axis title
+
+  // Which toggle groups apply to the current variable selection
+  const showStatToggles = (xNumeric && !bivariate) || (bivariate && (xNumeric !== yNumeric));
+  const showCatToggles = (!bivariate && !xNumeric) || (bivariate && !xNumeric && !yNumeric);
+  const toggleExpand = () => setExpandCats(e => !e);
 
   return (
-    <div>
+    <div ref={plotRef} style={{ flex:"2 1 460px", minWidth:320 }}>
+      {/* Controls */}
       <div style={{ display:"flex", gap:8, marginBottom:8, flexWrap:"wrap", alignItems:"center" }}>
-        <Sel label="X" value={xVar} onChange={setXVar} options={varNames} />
-        <Sel label="Y" value={yVar} onChange={setYVar} options={["none", ...varNames.filter(v => v !== xVar)]} labels={["— stack dots —", ...varNames.filter(v => v !== xVar)]} />
-        <Sel label="Color" value={colorVar} onChange={setColorVar} options={["none", ...varNames]} labels={["none", ...varNames]} />
+        <Sel label="X" value={xVar} onChange={setXVar} options={headers} />
+        <Sel label="Y" value={yVar} onChange={setYVar} options={["none", ...headers.filter(h => h !== xVar)]} labels={["— none —", ...headers.filter(h => h !== xVar)]} />
         <label style={ctrlLbl}>dot size
           <input type="range" min={1} max={12} value={dotSize} onChange={e => setDotSize(+e.target.value)} style={{ width:55, marginLeft:4 }} />
         </label>
       </div>
-      <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
-        {xS.ticks.map((t, i) => <line key={i} x1={PL + xS.scale(t)} y1={PT} x2={PL + xS.scale(t)} y2={PT + iH} stroke="#f0f0f0" strokeWidth={1} />)}
-        {yS && yS.ticks.map((t, i) => <line key={i} x1={PL} y1={PT + iH - yS.scale(t)} x2={PL + iW} y2={PT + iH - yS.scale(t)} stroke="#f0f0f0" strokeWidth={1} />)}
-        <line x1={PL} y1={PT + iH} x2={PL + iW} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
-        <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
-        {xS.ticks.map((t, i) => (
-          <g key={i}>
-            <line x1={PL + xS.scale(t)} y1={PT + iH} x2={PL + xS.scale(t)} y2={PT + iH + 4} stroke="#bbb" />
-            <text x={PL + xS.scale(t)} y={PT + iH + 15} textAnchor="middle" fontSize={10} fill="#999">{xS.fmt(t)}</text>
-          </g>
-        ))}
-        {yS && yS.ticks.map((t, i) => (
-          <g key={i}>
-            <line x1={PL - 4} y1={PT + iH - yS.scale(t)} x2={PL} y2={PT + iH - yS.scale(t)} stroke="#bbb" />
-            <text x={PL - 7} y={PT + iH - yS.scale(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="#999">{yS.fmt(t)}</text>
-          </g>
-        ))}
-        <text x={PL + iW / 2} y={H - 3} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{xVar}</text>
-        {yS && <text x={12} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600} transform={"rotate(-90,12," + (PT + iH / 2) + ")"}>{yVar}</text>}
-        {dots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={R} fill={d.color} fillOpacity={opacity} stroke="none" />)}
-      </svg>
-      {colorVar !== "none" && (
-        <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:2 }}>
-          {colorKeys.map(k => (
-            <div key={k} style={{ display:"flex", alignItems:"center", gap:3, fontSize:11 }}>
-              <div style={{ width:9, height:9, borderRadius:"50%", background:colorMap[k] }} />
-              <span style={{ color:"#666" }}>{colorVar}={k}</span>
-            </div>
-          ))}
-        </div>
-      )}
+
+      {/* Stat toggles — adapt to the variable types */}
+      <div style={{ display:"flex", gap:10, marginBottom:8, flexWrap:"wrap", fontSize:12 }}>
+        {showStatToggles && (
+          <>
+            <ChkLabel checked={showBox} onChange={setShowBox} label="📦 Boxplot" />
+            <ChkLabel checked={showMean} onChange={setShowMean} label="△ Mean" />
+            <ChkLabel checked={showSD} onChange={setShowSD} label="↔ ±1 SD" />
+          </>
+        )}
+        {bivariate && xNumeric && yNumeric && (
+          <ChkLabel checked={showLS} onChange={setShowLS} label="📈 LS Line" />
+        )}
+        {(showStatToggles || (bivariate && xNumeric && yNumeric)) && (
+          <ChkLabel checked={showValues} onChange={setShowValues} label="🔢 Show values" />
+        )}
+        {showCatToggles && (
+          <>
+            <ChkLabel checked={showCount} onChange={setShowCount} label="# Count" />
+            <ChkLabel checked={showPct} onChange={setShowPct} label="% Percent" />
+          </>
+        )}
+      </div>
+
+      {/* Plot — rendering depends on variable types */}
+      {(() => {
+        // MODE 1: both categorical → grid of cells with stacked dots + count/%
+        if (bivariate && !xNumeric && !yNumeric) {
+          return <CatCatGrid rows={rows} xVar={xVar} yVar={yVar} R={R} width={W}
+            showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} />;
+        }
+        // MODE 2: one categorical + one numeric → split dot plots by category.
+        // Respect the axis choice: numeric-X stays horizontal; numeric-Y draws
+        // vertical distributions side by side.
+        if (bivariate && (xNumeric !== yNumeric)) {
+          const catVar = xNumeric ? yVar : xVar;
+          const numVar = xNumeric ? xVar : yVar;
+          const numTime = xNumeric ? xTime : yTime;
+          return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} R={R} width={W} isTime={numTime}
+            orientation={xNumeric ? "h" : "v"}
+            showBox={showBox} showMean={showMean} showSD={showSD} showValues={showValues}
+            expanded={expandCats} onToggleExpand={toggleExpand} />;
+        }
+        // MODE 3: single categorical → binned stacked-dot cells
+        if (!bivariate && !xNumeric) {
+          return <UniCatPlot rows={rows} catVar={xVar} R={R} width={W}
+            showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} />;
+        }
+        // MODE 4: scatter (both numeric) or univariate numeric → SVG
+        return (
+          <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
+            {/* grid */}
+            {xS.ticks.map((t, i) => <line key={"xg"+i} x1={sx(t)} y1={PT} x2={sx(t)} y2={PT + iH} stroke="#f5f5f5" strokeWidth={1} />)}
+            {yS && yS.ticks.map((t, i) => <line key={"yg"+i} x1={PL} y1={PT + iH - yS.scale(t)} x2={PL + iW} y2={PT + iH - yS.scale(t)} stroke="#f5f5f5" strokeWidth={1} />)}
+            {/* axes */}
+            <line x1={PL} y1={PT + iH} x2={PL + iW} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
+            <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
+            {/* x ticks */}
+            {xS.ticks.map((t, i) => (
+              <g key={"xt"+i}>
+                <line x1={sx(t)} y1={PT + iH} x2={sx(t)} y2={PT + iH + 4} stroke="#bbb" />
+                <text x={sx(t)} y={tickLblY} textAnchor="middle" fontSize={10} fill="#999">{xS.fmt(t)}</text>
+              </g>
+            ))}
+            {/* y ticks */}
+            {yS && yS.ticks.map((t, i) => (
+              <g key={"yt"+i}>
+                <line x1={PL - 4} y1={PT + iH - yS.scale(t)} x2={PL} y2={PT + iH - yS.scale(t)} stroke="#bbb" />
+                <text x={PL - 7} y={PT + iH - yS.scale(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="#999">{yS.fmt(t)}</text>
+              </g>
+            ))}
+            {/* axis labels */}
+            <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{xVar}</text>
+            {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{yVar}</text>}
+            {/* dots */}
+            {dots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={R} fill="#3b82f6" fillOpacity={Math.min(0.85, Math.max(0.2, 70 / Math.sqrt(dots.length + 1)))} />)}
+            {/* LS line */}
+            {showLS && ls && yS && (() => {
+              const x1 = xS.lo, x2 = xS.hi;
+              const y1 = ls.slope * x1 + ls.intercept, y2v = ls.slope * x2 + ls.intercept;
+              return (
+                <g>
+                  <line x1={sx(x1)} y1={PT + iH - yS.scale(y1)} x2={sx(x2)} y2={PT + iH - yS.scale(y2v)} stroke="#ef4444" strokeWidth={2} />
+                  {showValues && (
+                    <text x={PL + iW - 4} y={PT + 12} textAnchor="end" fontSize={10} fill="#ef4444" fontWeight={700}>
+                      ŷ = {parseFloat(ls.slope.toFixed(3))}x + {parseFloat(ls.intercept.toFixed(3))} · R² = {parseFloat(ls.r2.toFixed(3))}
+                    </text>
+                  )}
+                </g>
+              );
+            })()}
+            {/* ±1 SD bar — runs through the mean triangle, centred on the mean */}
+            {showSD && xSummary && !bivariate && (() => {
+              const loX = sx(xSummary.mean - xSummary.sd), hiX = sx(xSummary.mean + xSummary.sd), mx = sx(xSummary.mean);
+              const labelX = Math.max(hiX, mx + 9) + 5; // keep the value clear of the triangle
+              return (
+                <g>
+                  <line x1={loX} y1={sdBarY} x2={hiX} y2={sdBarY} stroke="#f59e0b" strokeWidth={2} />
+                  <line x1={loX} y1={sdBarY - 4} x2={loX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
+                  <line x1={hiX} y1={sdBarY - 4} x2={hiX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
+                  {showValues && <text x={labelX} y={sdBarY + 3} textAnchor="start" fontSize={9} fill="#d97706" fontWeight={700}>±1 SD = {parseFloat(xSummary.sd.toFixed(2))}</text>}
+                </g>
+              );
+            })()}
+            {/* Mean triangle — tip sits on the x-axis (the axis being averaged) */}
+            {showMean && xSummary && !bivariate && (() => {
+              const mx = sx(xSummary.mean);
+              return (
+                <g>
+                  <polygon points={mx + "," + axisY + " " + (mx - 6) + "," + meanBaseY + " " + (mx + 6) + "," + meanBaseY} fill="#10b981" stroke="#059669" strokeWidth={1} />
+                  {showValues && <text x={mx} y={meanValY} textAnchor="middle" fontSize={9} fill="#059669" fontWeight={700}>{fmtX(xSummary.mean)}</text>}
+                </g>
+              );
+            })()}
+            {/* Boxplot (univariate numeric) — Tukey whiskers, separated below */}
+            {showBox && xSummary && !bivariate && (
+              <g>
+                <line x1={sx(xSummary.whiskerLo)} y1={boxCy} x2={sx(xSummary.whiskerHi)} y2={boxCy} stroke="#475569" strokeWidth={1.5} />
+                <line x1={sx(xSummary.whiskerLo)} y1={boxCy - 6} x2={sx(xSummary.whiskerLo)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
+                <line x1={sx(xSummary.whiskerHi)} y1={boxCy - 6} x2={sx(xSummary.whiskerHi)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
+                <rect x={sx(xSummary.q1)} y={boxCy - 9} width={Math.max(1, sx(xSummary.q3) - sx(xSummary.q1))} height={18} fill="rgba(99,102,241,0.18)" stroke="#6366f1" strokeWidth={1.5} />
+                <line x1={sx(xSummary.median)} y1={boxCy - 9} x2={sx(xSummary.median)} y2={boxCy + 9} stroke="#6366f1" strokeWidth={2.5} />
+                {showValues && <text x={sx(xSummary.median)} y={medianValY} textAnchor="middle" fontSize={9} fontWeight={700} fill="#4338ca">{fmtX(xSummary.median)}</text>}
+              </g>
+            )}
+          </svg>
+        );
+      })()}
     </div>
   );
 }
@@ -157,251 +330,80 @@ function StatDistPlot({ label, values, color }) {
 // EDA PLOT — exploratory plot with toggleable statistics overlays
 // ══════════════════════════════════════════════════════════════════════════════
 function EDAPlot({ rows, headers }) {
+  // X/Y selection lives here so the sibling DataTable can highlight the chosen
+  // columns; the Plot owns dot size + overlay toggles. (Plot keeps X/Y valid.)
   const [xVar, setXVar] = useState(headers[0] || "");
   const [yVar, setYVar] = useState("none");
-  const [dotSize, setDotSize] = useState(5);
-
-  // Stat overlay toggles
-  const [showBox, setShowBox] = useState(false);
-  const [showMean, setShowMean] = useState(false);
-  const [showSD, setShowSD] = useState(false);
-  const [showLS, setShowLS] = useState(false);
-  const [showValues, setShowValues] = useState(false);
-  // Categorical cell labels
-  const [showCount, setShowCount] = useState(true);
-  const [showPct, setShowPct] = useState(false);
-  // Collapse high-cardinality categorical axes (>10 categories)
-  const [expandCats, setExpandCats] = useState(false);
-
-  const plotRef = useRef(null);
-  const plotW = useContainerWidth(plotRef, 280, 760);
-
-  // Detect each column's type once per (rows, headers). colInfo[col] = {numeric,time}.
-  const colInfo = useMemo(() => {
-    const map = {};
-    headers.forEach(h => { map[h] = colKind(rows, h); });
-    return map;
-  }, [rows, headers]);
-
-  useEffect(() => { if (headers.length && !headers.includes(xVar)) setXVar(headers[0]); }, [headers.join(",")]);
-  // Keep Y valid: reset to "none" if it's no longer a column or collides with X
-  useEffect(() => { if (yVar !== "none" && (!headers.includes(yVar) || yVar === xVar)) setYVar("none"); }, [headers.join(","), xVar]);
 
   if (!rows.length) return <div style={{ color:"#bbb", padding:24, textAlign:"center" }}>No data loaded.</div>;
-  if (!xVar) return null;
-
-  const xInfo = colInfo[xVar] || { numeric:false, time:false };
-  const yInfo = (yVar !== "none" && colInfo[yVar]) || { numeric:false, time:false };
-  const xNumeric = xInfo.numeric, xTime = xInfo.time;
-  const yNumeric = yVar !== "none" && yInfo.numeric, yTime = yInfo.time;
-  const bivariate = yVar !== "none";
-
-  const W = plotW, PL = 56, PR = 20, PT = 20;
-  const iW = W - PL - PR, iH = 210; // plot area; footer height is computed below
-  const R = dotSize;
-
-  // ── Build scales (numeric / time only; categorical handled by cell plots) ──
-  const buildScale = (col, size, isNum, isTime) =>
-    makeScale(rows.map(r => r[col]), size, { numeric: isNum, time: isTime, toNumber: toNum, pad: 0.05, tickCount: 6, precision: 2 });
-
-  const xS = buildScale(xVar, iW, xNumeric, xTime);
-  const yS = bivariate ? buildScale(yVar, iH, yNumeric, yTime) : null;
-
-  // ── Compute dot positions ──
-  const valid = rows.filter(r => {
-    const xv = r[xVar];
-    if (xv === undefined || xv === "") return false;
-    if (bivariate && (r[yVar] === undefined || r[yVar] === "")) return false;
-    return true;
-  });
-  const xps = valid.map(r => xS.scale(r[xVar]));
-  const yOffsets = yS ? null : stackDots(xps, R, iH, 1);
-  const dots = valid.map((r, i) => ({
-    x: PL + xps[i],
-    y: PT + (yS ? iH - yS.scale(r[yVar]) : yOffsets[i]),
-  }));
-
-  // ── Univariate numeric summary (for box/mean/SD overlays) ──
-  const xNums = rows.map(r => toNum(r[xVar])).filter(v => !isNaN(v));
-  const xSummary = xNumeric ? numericSummary(xNums) : null;
-  const fmtX = xTime ? minutesToTime : (v => parseFloat(v.toFixed(2)));
-
-  // LS fit for bivariate numeric
-  let ls = null;
-  if (bivariate && xNumeric && yNumeric) {
-    const pairs = rows.map(r => ({ x: toNum(r[xVar]), y: toNum(r[yVar]) })).filter(p => !isNaN(p.x) && !isNaN(p.y));
-    ls = lsFit(pairs);
-  }
-
-  const sx = v => PL + xS.scale(v);
-  // Univariate numeric overlays hug the axis: the mean triangle's tip sits on the
-  // x-axis, the ±SD bar is directly beneath it (adjacent to the mean), and the
-  // boxplot is separated below. Tick labels sit below the strip.
-  const axisY = PT + iH;
-  const sdBarY = axisY + 7;        // ±SD bar runs through the mean triangle (centred on the mean)
-  const meanBaseY = axisY + 13;    // triangle base
-  const meanValY = axisY + 23;     // mean value, below the triangle
-  const boxCy = axisY + 38;        // boxplot centre, with room above + below for values
-  const medianValY = axisY + 59;   // median value, below the box
-  const hasUniOverlay = !bivariate && xSummary && (showBox || showMean || showSD);
-  let overlayBottom = axisY;
-  if (hasUniOverlay) {
-    if (showMean) overlayBottom = Math.max(overlayBottom, showValues ? meanValY : meanBaseY);
-    if (showSD) overlayBottom = Math.max(overlayBottom, sdBarY + 4);
-    if (showBox) overlayBottom = Math.max(overlayBottom, showValues ? medianValY : boxCy + 9);
-  }
-  const tickLblY = hasUniOverlay ? overlayBottom + 14 : axisY + 16;
-  const H = tickLblY + 18; // tick labels + axis title
-
-  // Which toggle groups apply to the current variable selection
-  const showStatToggles = (xNumeric && !bivariate) || (bivariate && (xNumeric !== yNumeric));
-  const showCatToggles = (!bivariate && !xNumeric) || (bivariate && !xNumeric && !yNumeric);
-  const toggleExpand = () => setExpandCats(e => !e);
 
   return (
     <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
       {/* LEFT: data viewer */}
       <DataTable rows={rows} headers={headers} xVar={xVar} yVar={yVar} />
+      {/* RIGHT: shared interactive plot */}
+      <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar} />
+    </div>
+  );
+}
 
-      {/* RIGHT: controls + plot */}
-      <div ref={plotRef} style={{ flex:"2 1 460px", minWidth:320 }}>
-        {/* Controls */}
-        <div style={{ display:"flex", gap:8, marginBottom:8, flexWrap:"wrap", alignItems:"center" }}>
-          <Sel label="X" value={xVar} onChange={setXVar} options={headers} />
-          <Sel label="Y" value={yVar} onChange={setYVar} options={["none", ...headers.filter(h => h !== xVar)]} labels={["— none —", ...headers.filter(h => h !== xVar)]} />
-          <label style={ctrlLbl}>dot size
-            <input type="range" min={1} max={12} value={dotSize} onChange={e => setDotSize(+e.target.value)} style={{ width:55, marginLeft:4 }} />
-          </label>
-        </div>
+// ══════════════════════════════════════════════════════════════════════════════
+// SAMPLE RESULTS — mirrors the EDA layout (table left, shared Plot right) for the
+// raw draws of a sampler run. The table is chronological: newest rows append at
+// the BOTTOM and the scroll view auto-follows as draws stream in.
+// ══════════════════════════════════════════════════════════════════════════════
+function SampleResults({ sampleData, varNames }) {
+  const [xVar, setXVar] = useState(varNames[0] || "");
+  const [yVar, setYVar] = useState("none");
+  const scrollRef = useRef(null);
 
-        {/* Stat toggles — adapt to the variable types */}
-        <div style={{ display:"flex", gap:10, marginBottom:8, flexWrap:"wrap", fontSize:12 }}>
-          {showStatToggles && (
-            <>
-              <ChkLabel checked={showBox} onChange={setShowBox} label="📦 Boxplot" />
-              <ChkLabel checked={showMean} onChange={setShowMean} label="△ Mean" />
-              <ChkLabel checked={showSD} onChange={setShowSD} label="↔ ±1 SD" />
-            </>
-          )}
-          {bivariate && xNumeric && yNumeric && (
-            <ChkLabel checked={showLS} onChange={setShowLS} label="📈 LS Line" />
-          )}
-          {(showStatToggles || (bivariate && xNumeric && yNumeric)) && (
-            <ChkLabel checked={showValues} onChange={setShowValues} label="🔢 Show values" />
-          )}
-          {showCatToggles && (
-            <>
-              <ChkLabel checked={showCount} onChange={setShowCount} label="# Count" />
-              <ChkLabel checked={showPct} onChange={setShowPct} label="% Percent" />
-            </>
-          )}
-        </div>
+  // Auto-scroll the table to the bottom as new draws arrive
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [sampleData.length]);
 
-        {/* Plot — rendering depends on variable types */}
-        {(() => {
-          // MODE 1: both categorical → grid of cells with stacked dots + count/%
-          if (bivariate && !xNumeric && !yNumeric) {
-            return <CatCatGrid rows={rows} xVar={xVar} yVar={yVar} R={R} width={W}
-              showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} />;
-          }
-          // MODE 2: one categorical + one numeric → split dot plots by category.
-          // Respect the axis choice: numeric-X stays horizontal; numeric-Y draws
-          // vertical distributions side by side.
-          if (bivariate && (xNumeric !== yNumeric)) {
-            const catVar = xNumeric ? yVar : xVar;
-            const numVar = xNumeric ? xVar : yVar;
-            const numTime = xNumeric ? xTime : yTime;
-            return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} R={R} width={W} isTime={numTime}
-              orientation={xNumeric ? "h" : "v"}
-              showBox={showBox} showMean={showMean} showSD={showSD} showValues={showValues}
-              expanded={expandCats} onToggleExpand={toggleExpand} />;
-          }
-          // MODE 3: single categorical → binned stacked-dot cells
-          if (!bivariate && !xNumeric) {
-            return <UniCatPlot rows={rows} catVar={xVar} R={R} width={W}
-              showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} />;
-          }
-          // MODE 4: scatter (both numeric) or univariate numeric → SVG
-          return (
-            <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
-              {/* grid */}
-              {xS.ticks.map((t, i) => <line key={"xg"+i} x1={sx(t)} y1={PT} x2={sx(t)} y2={PT + iH} stroke="#f5f5f5" strokeWidth={1} />)}
-              {yS && yS.ticks.map((t, i) => <line key={"yg"+i} x1={PL} y1={PT + iH - yS.scale(t)} x2={PL + iW} y2={PT + iH - yS.scale(t)} stroke="#f5f5f5" strokeWidth={1} />)}
-              {/* axes */}
-              <line x1={PL} y1={PT + iH} x2={PL + iW} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
-              <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
-              {/* x ticks */}
-              {xS.ticks.map((t, i) => (
-                <g key={"xt"+i}>
-                  <line x1={sx(t)} y1={PT + iH} x2={sx(t)} y2={PT + iH + 4} stroke="#bbb" />
-                  <text x={sx(t)} y={tickLblY} textAnchor="middle" fontSize={10} fill="#999">{xS.fmt(t)}</text>
-                </g>
+  if (!sampleData.length) {
+    return <div style={{ color:"#bbb", textAlign:"center", padding:24 }}>Press "Draw Sample" to begin</div>;
+  }
+
+  const cols = ["_sample", ...varNames];
+  const cellColor = c => c === "_sample" ? "#bbb" : (c === xVar ? "#3730a3" : (c === yVar ? "#047857" : "#2c3e50"));
+  const cellBg = c => c === xVar ? "#eef2ff" : (c === yVar ? "#ecfdf5" : "transparent");
+  // Cap the rendered rows for performance; the most recent draws are kept.
+  const MAX_ROWS = 200;
+  const shown = sampleData.slice(-MAX_ROWS);
+  const offset = sampleData.length - shown.length;
+
+  return (
+    <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
+      {/* LEFT: data table (chronological, auto-scrolling) */}
+      <div style={{ flex:"1 1 240px", minWidth:200, maxWidth:340 }}>
+        <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Draws</div>
+        <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid #eee", borderRadius:8 }}>
+          <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
+            <thead>
+              <tr>
+                {cols.map(c => (
+                  <th key={c} style={{ position:"sticky", top:0, background: c === xVar ? "#c7d2fe" : (c === yVar ? "#a7f3d0" : "#f8f9fa"), color: c === "_sample" ? "#bbb" : "#334155", fontWeight: c === "_sample" ? 600 : 700, padding:"4px 8px", textAlign: c === "_sample" ? "right" : "left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>{c === "_sample" ? "#" : c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((row, i) => (
+                <tr key={offset + i} style={{ borderBottom:"1px solid #f5f5f5" }}>
+                  {cols.map(c => (
+                    <td key={c} style={{ padding:"3px 8px", color:cellColor(c), background:cellBg(c), textAlign: c === "_sample" ? "right" : "left", whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>{row[c]}</td>
+                  ))}
+                </tr>
               ))}
-              {/* y ticks */}
-              {yS && yS.ticks.map((t, i) => (
-                <g key={"yt"+i}>
-                  <line x1={PL - 4} y1={PT + iH - yS.scale(t)} x2={PL} y2={PT + iH - yS.scale(t)} stroke="#bbb" />
-                  <text x={PL - 7} y={PT + iH - yS.scale(t)} textAnchor="end" dominantBaseline="middle" fontSize={10} fill="#999">{yS.fmt(t)}</text>
-                </g>
-              ))}
-              {/* axis labels */}
-              <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{xVar}</text>
-              {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{yVar}</text>}
-              {/* dots */}
-              {dots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={R} fill="#3b82f6" fillOpacity={Math.min(0.85, Math.max(0.2, 70 / Math.sqrt(dots.length + 1)))} />)}
-              {/* LS line */}
-              {showLS && ls && yS && (() => {
-                const x1 = xS.lo, x2 = xS.hi;
-                const y1 = ls.slope * x1 + ls.intercept, y2v = ls.slope * x2 + ls.intercept;
-                return (
-                  <g>
-                    <line x1={sx(x1)} y1={PT + iH - yS.scale(y1)} x2={sx(x2)} y2={PT + iH - yS.scale(y2v)} stroke="#ef4444" strokeWidth={2} />
-                    {showValues && (
-                      <text x={PL + iW - 4} y={PT + 12} textAnchor="end" fontSize={10} fill="#ef4444" fontWeight={700}>
-                        ŷ = {parseFloat(ls.slope.toFixed(3))}x + {parseFloat(ls.intercept.toFixed(3))} · R² = {parseFloat(ls.r2.toFixed(3))}
-                      </text>
-                    )}
-                  </g>
-                );
-              })()}
-              {/* ±1 SD bar — runs through the mean triangle, centred on the mean */}
-              {showSD && xSummary && !bivariate && (() => {
-                const loX = sx(xSummary.mean - xSummary.sd), hiX = sx(xSummary.mean + xSummary.sd), mx = sx(xSummary.mean);
-                const labelX = Math.max(hiX, mx + 9) + 5; // keep the value clear of the triangle
-                return (
-                  <g>
-                    <line x1={loX} y1={sdBarY} x2={hiX} y2={sdBarY} stroke="#f59e0b" strokeWidth={2} />
-                    <line x1={loX} y1={sdBarY - 4} x2={loX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
-                    <line x1={hiX} y1={sdBarY - 4} x2={hiX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
-                    {showValues && <text x={labelX} y={sdBarY + 3} textAnchor="start" fontSize={9} fill="#d97706" fontWeight={700}>±1 SD = {parseFloat(xSummary.sd.toFixed(2))}</text>}
-                  </g>
-                );
-              })()}
-              {/* Mean triangle — tip sits on the x-axis (the axis being averaged) */}
-              {showMean && xSummary && !bivariate && (() => {
-                const mx = sx(xSummary.mean);
-                return (
-                  <g>
-                    <polygon points={mx + "," + axisY + " " + (mx - 6) + "," + meanBaseY + " " + (mx + 6) + "," + meanBaseY} fill="#10b981" stroke="#059669" strokeWidth={1} />
-                    {showValues && <text x={mx} y={meanValY} textAnchor="middle" fontSize={9} fill="#059669" fontWeight={700}>{fmtX(xSummary.mean)}</text>}
-                  </g>
-                );
-              })()}
-              {/* Boxplot (univariate numeric) — Tukey whiskers, separated below */}
-              {showBox && xSummary && !bivariate && (
-                <g>
-                  <line x1={sx(xSummary.whiskerLo)} y1={boxCy} x2={sx(xSummary.whiskerHi)} y2={boxCy} stroke="#475569" strokeWidth={1.5} />
-                  <line x1={sx(xSummary.whiskerLo)} y1={boxCy - 6} x2={sx(xSummary.whiskerLo)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
-                  <line x1={sx(xSummary.whiskerHi)} y1={boxCy - 6} x2={sx(xSummary.whiskerHi)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
-                  <rect x={sx(xSummary.q1)} y={boxCy - 9} width={Math.max(1, sx(xSummary.q3) - sx(xSummary.q1))} height={18} fill="rgba(99,102,241,0.18)" stroke="#6366f1" strokeWidth={1.5} />
-                  <line x1={sx(xSummary.median)} y1={boxCy - 9} x2={sx(xSummary.median)} y2={boxCy + 9} stroke="#6366f1" strokeWidth={2.5} />
-                  {showValues && <text x={sx(xSummary.median)} y={medianValY} textAnchor="middle" fontSize={9} fontWeight={700} fill="#4338ca">{fmtX(xSummary.median)}</text>}
-                </g>
-              )}
-            </svg>
-          );
-        })()}
+            </tbody>
+          </table>
+        </div>
+        {sampleData.length > MAX_ROWS && <div style={{ fontSize:10, color:"#aaa", marginTop:4 }}>Showing last {MAX_ROWS} of {sampleData.length} draws</div>}
       </div>
+      {/* RIGHT: shared interactive plot */}
+      <Plot rows={sampleData} headers={varNames} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar} />
     </div>
   );
 }
@@ -855,4 +857,4 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
 }
 
 
-export { DotPlot, StatDefiner, StatDistPlot, EDAPlot, DataTable, UniCatPlot, CatCatGrid, SplitDotPlots };
+export { Plot, SampleResults, StatDefiner, StatDistPlot, EDAPlot, DataTable, UniCatPlot, CatCatGrid, SplitDotPlots };
