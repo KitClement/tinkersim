@@ -3,6 +3,7 @@ import { iSm, btnX, btnNav, ctrlLbl } from "../lib/styles";
 import { COLORS, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR } from "../lib/util";
 import { numericSummary, lsFit, statLabel, FN_OPTS } from "../lib/stats";
 import { useContainerWidth } from "../lib/hooks";
+import { makeScale, stackDots } from "../lib/scale";
 import { Sel, ChkLabel } from "./ui";
 
 function DotPlot({ data, varNames }) {
@@ -20,50 +21,21 @@ function DotPlot({ data, varNames }) {
 
   const W = 500, H = 260, PL = 50, PR = 16, PT = 18, PB = 44, iW = W - PL - PR, iH = H - PT - PB, R = dotSize;
 
-  const makeScale = (vn, size) => {
+  const buildScale = (vn, size) => {
     const vals = data.map(r => r[vn]);
     const numeric = vals.slice(0, 20).every(v => !isNaN(Number(v)));
-    if (numeric) {
-      const nums = vals.map(Number), mn = Math.min(...nums), mx = Math.max(...nums);
-      const range = mx - mn || 1, pad = range * 0.05, lo = mn - pad, hi = mx + pad;
-      const nT = Math.min(7, Math.max(2, Math.ceil(range) + 1));
-      const ticks = Array.from({ length:nT }, (_, i) => mn + (i / (nT - 1)) * range);
-      return { numeric:true, scale:v => ((Number(v) - lo) / (hi - lo)) * size, ticks, fmt:v => parseFloat(v.toFixed(2)) };
-    } else {
-      const cats = [...new Set(vals)].sort(), step = size / cats.length;
-      return { numeric:false, scale:v => cats.indexOf(v) * step + step / 2, ticks:cats, fmt:v => v };
-    }
+    return makeScale(vals, size, { numeric, toNumber: Number, pad: 0.05, tickCount: r => Math.min(7, Math.max(2, Math.ceil(r) + 1)), precision: 2 });
   };
 
-  const xS = makeScale(xVar, iW);
-  const yS = yVar !== "none" ? makeScale(yVar, iH) : null;
+  const xS = buildScale(xVar, iW);
+  const yS = yVar !== "none" ? buildScale(yVar, iH) : null;
 
-  // First pass: count how many dots fall in each x-stack column to find the tallest
-  const colCounts = {};
-  if (!yS) {
-    data.forEach(row => {
-      const xp = xS.scale(row[xVar]);
-      const key = Math.round(xp / (R * 2 + 1));
-      colCounts[key] = (colCounts[key] || 0) + 1;
-    });
-  }
-  const tallest = Math.max(1, ...Object.values(colCounts));
-  // Vertical spacing per dot: shrink so tallest stack fits within iH
-  const fitSpacing = (iH - R) / tallest;
-  const dotSpacing = Math.min(R * 2 + 1, fitSpacing);
-
-  const stks = {};
-  const dots = data.map(row => {
-    const xp = xS.scale(row[xVar]);
-    let yp;
-    if (yS) { yp = iH - yS.scale(row[yVar]); }
-    else {
-      const key = Math.round(xp / (R * 2 + 1));
-      stks[key] = (stks[key] || 0) + 1;
-      yp = iH - (stks[key] - 1) * dotSpacing - R;
-    }
+  const xps = data.map(row => xS.scale(row[xVar]));
+  const yOffsets = yS ? null : stackDots(xps, R, iH, 1);
+  const dots = data.map((row, i) => {
+    const yp = yS ? iH - yS.scale(row[yVar]) : yOffsets[i];
     const color = colorVar !== "none" ? (colorMap[row[colorVar]] || "#888") : "#3b82f6";
-    return { x:PL + xp, y:PT + yp, color };
+    return { x: PL + xps[i], y: PT + yp, color };
   });
   const opacity = Math.min(0.9, Math.max(0.15, 80 / Math.sqrt(dots.length + 1)));
 
@@ -144,20 +116,14 @@ function StatDefiner({ stat, varNames, sampleData, onChange, onRemove }) {
 function StatDistPlot({ label, values, color }) {
   const valid = values.filter(v => !isNaN(v) && isFinite(v));
   if (!valid.length) return <div style={{ color:"#bbb", fontSize:12, padding:8 }}>No valid values.</div>;
-  const mn = Math.min(...valid), mx = Math.max(...valid), range = mx - mn || 1;
+  const mn = Math.min(...valid), mx = Math.max(...valid);
   const mean = valid.reduce((a, b) => a + b, 0) / valid.length;
   const W = 300, H = 180, PL = 44, PR = 10, PT = 16, PB = 32, iW = W - PL - PR, iH = H - PT - PB;
   const R = Math.max(2, Math.min(6, Math.floor(iW / (valid.length * 0.8 + 1))));
-  const pad = range * 0.06, lo = mn - pad, hi = mx + pad;
-  const xS = v => ((v - lo) / (hi - lo)) * iW;
-  // Find tallest stack to scale vertical spacing so it fits
-  const colCounts = {};
-  valid.forEach(v => { const key = Math.round(xS(v) / (R * 2 + 0.5)); colCounts[key] = (colCounts[key] || 0) + 1; });
-  const tallest = Math.max(1, ...Object.values(colCounts));
-  const dotSpacing = Math.min(R * 2 + 0.5, (iH - R) / tallest);
-  const stks = {};
-  const dots = valid.map(v => { const xp = xS(v), key = Math.round(xp / (R * 2 + 0.5)); stks[key] = (stks[key] || 0) + 1; return { x:PL + xp, y:PT + iH - (stks[key] - 1) * dotSpacing - R }; });
-  const nT = 5, ticks = Array.from({ length:nT }, (_, i) => mn + (i / (nT - 1)) * range);
+  const xSc = makeScale(valid, iW, { numeric: true, toNumber: Number, pad: 0.06, tickCount: 5, precision: 3 });
+  const xS = xSc.scale, ticks = xSc.ticks;
+  const yOffsets = stackDots(valid.map(v => xS(v)), R, iH, 0.5);
+  const dots = valid.map((v, i) => ({ x: PL + xS(v), y: PT + yOffsets[i] }));
   const opacity = Math.min(0.9, Math.max(0.2, 80 / Math.sqrt(valid.length + 1)));
   const meanX = PL + xS(mean);
   return (
@@ -235,50 +201,25 @@ function EDAPlot({ rows, headers }) {
   const R = dotSize;
 
   // ── Build scales (numeric / time only; categorical handled by cell plots) ──
-  const makeScale = (col, size, isNum, isTime) => {
-    const vals = rows.map(r => r[col]).filter(v => v !== undefined && v !== "");
-    if (isNum) {
-      const nums = vals.map(toNum).filter(v => !isNaN(v));
-      const mn = Math.min(...nums), mx = Math.max(...nums);
-      const range = mx - mn || 1, pad = range * 0.05, lo = mn - pad, hi = mx + pad;
-      const nT = 6;
-      const ticks = Array.from({ length: nT }, (_, i) => mn + (i / (nT - 1)) * range);
-      const fmt = isTime ? (v => minutesToTime(v)) : (v => parseFloat(v.toFixed(2)));
-      return { numeric: true, lo, hi, scale: v => ((toNum(v) - lo) / (hi - lo)) * size, ticks, fmt };
-    } else {
-      const cats = [...new Set(vals)].sort();
-      const step = size / cats.length;
-      const idxOf = {}; cats.forEach((c, i) => { idxOf[c] = i; });
-      return { numeric: false, cats, scale: v => (idxOf[v] || 0) * step + step / 2, ticks: cats, fmt: v => v };
-    }
-  };
+  const buildScale = (col, size, isNum, isTime) =>
+    makeScale(rows.map(r => r[col]), size, { numeric: isNum, time: isTime, toNumber: toNum, pad: 0.05, tickCount: 6, precision: 2 });
 
-  const xS = makeScale(xVar, iW, xNumeric, xTime);
-  const yS = bivariate ? makeScale(yVar, iH, yNumeric, yTime) : null;
+  const xS = buildScale(xVar, iW, xNumeric, xTime);
+  const yS = bivariate ? buildScale(yVar, iH, yNumeric, yTime) : null;
 
   // ── Compute dot positions ──
-  const colCounts = {};
-  if (!yS) {
-    rows.forEach(r => {
-      const v = r[xVar]; if (v === undefined || v === "") return;
-      const key = Math.round(xS.scale(v) / (R * 2 + 1));
-      colCounts[key] = (colCounts[key] || 0) + 1;
-    });
-  }
-  const tallest = Math.max(1, ...Object.values(colCounts));
-  const dotSpacing = Math.min(R * 2 + 1, (iH - R) / tallest);
-
-  const stks = {};
-  const dots = rows.map(r => {
+  const valid = rows.filter(r => {
     const xv = r[xVar];
-    if (xv === undefined || xv === "") return null;
-    if (bivariate && (r[yVar] === undefined || r[yVar] === "")) return null;
-    const xp = xS.scale(xv);
-    let yp;
-    if (yS) yp = iH - yS.scale(r[yVar]);
-    else { const key = Math.round(xp / (R * 2 + 1)); stks[key] = (stks[key] || 0) + 1; yp = iH - (stks[key] - 1) * dotSpacing - R; }
-    return { x: PL + xp, y: PT + yp };
-  }).filter(Boolean);
+    if (xv === undefined || xv === "") return false;
+    if (bivariate && (r[yVar] === undefined || r[yVar] === "")) return false;
+    return true;
+  });
+  const xps = valid.map(r => xS.scale(r[xVar]));
+  const yOffsets = yS ? null : stackDots(xps, R, iH, 1);
+  const dots = valid.map((r, i) => ({
+    x: PL + xps[i],
+    y: PT + (yS ? iH - yS.scale(r[yVar]) : yOffsets[i]),
+  }));
 
   // ── Univariate numeric summary (for box/mean/SD overlays) ──
   const xNums = rows.map(r => toNum(r[xVar])).filter(v => !isNaN(v));
