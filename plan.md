@@ -132,16 +132,24 @@ Do the `components/` + `lib/` split now, as part of this phase.
 - [x] Move components to `src/components/` (`EDAPlot`, `CatCatGrid`, `SplitDotPlots`,
       `DotPlot`, `StatDistPlot`, `DeviceCard` + device cards, `DataTable`, …).
       → `components/ui.jsx`, `components/devices.jsx`, `components/plots.jsx`.
-- [ ] Extract the EDA plot's scale builder (`makeScale`) and dot-stacking
+- [x] Extract the EDA plot's scale builder (`makeScale`) and dot-stacking
       (tallest-column → `dotSpacing`) into `src/lib/` so all plots share them.
-- [ ] Factor a `Plot` component that takes `{ rows, headers, xVar, yVar, overlays,
+      → `lib/scale.js`; `DotPlot`, `StatDistPlot`, `EDAPlot` all re-pointed at it,
+      verified pixel-identical (univariate, scatter+LS, sample dot plot).
+- [→] Factor a `Plot` component that takes `{ rows, headers, xVar, yVar, overlays,
       width, onTrackStat? }` so EDA, Sample Results, and the distribution plot can all
-      mount it; re-point `EDAPlot` at it.
-- [x] **Module split done:** production build passes; app mounts with no console
-      errors; Draw Sample, the EDA numeric plot, and stat overlays all render. The
-      `makeScale`/dot-stacking extraction + unified `Plot` component remain (above).
+      mount it; re-point `EDAPlot` at it. **Deferred to the start of Phase 1** so the
+      prop boundary is designed against a real second consumer (Sample Results)
+      instead of guessed against EDA alone.
+- [x] **Module split + shared primitives done:** production build passes; app mounts
+      with no console errors; the scale/dot-stacking duplication is gone. The unified
+      `Plot` component is the one remaining Phase 0 item, folded into Phase 1 below.
 
-### Phase 1 — Sample Results layout flip
+### Phase 1 — Sample Results layout flip (+ extract the `Plot` component)
+- [ ] **Factor the `Plot` component** (controls + plot body, no bundled data table)
+      out of `EDAPlot`, designed against both EDA and Sample Results as consumers.
+      Re-point `EDAPlot` at it; the data table stays composed alongside by each
+      context. (This is the carried-over second half of Phase 0.)
 - [ ] Swap the flex order: table left, plot right.
 - [ ] Append new rows to the **bottom**; drop the `.reverse()`; auto-scroll table to
       bottom as draws stream in.
