@@ -1504,15 +1504,17 @@ function EDAPlot({ rows, headers }) {
   // x-axis, the ±SD bar is directly beneath it (adjacent to the mean), and the
   // boxplot is separated below. Tick labels sit below the strip.
   const axisY = PT + iH;
-  const meanBaseY = axisY + 13;   // triangle: tip on axisY, base here
-  const sdBarY = axisY + 7;       // ±SD bar runs through the mean triangle (centred on the mean)
-  const boxCy = axisY + 26;       // boxplot centre, separated below
+  const sdBarY = axisY + 7;        // ±SD bar runs through the mean triangle (centred on the mean)
+  const meanBaseY = axisY + 13;    // triangle base
+  const meanValY = axisY + 23;     // mean value, below the triangle
+  const boxCy = axisY + 38;        // boxplot centre, with room above + below for values
+  const medianValY = axisY + 59;   // median value, below the box
   const hasUniOverlay = !bivariate && xSummary && (showBox || showMean || showSD);
   let overlayBottom = axisY;
   if (hasUniOverlay) {
-    if (showMean) overlayBottom = Math.max(overlayBottom, meanBaseY);
+    if (showMean) overlayBottom = Math.max(overlayBottom, showValues ? meanValY : meanBaseY);
     if (showSD) overlayBottom = Math.max(overlayBottom, sdBarY + 4);
-    if (showBox) overlayBottom = Math.max(overlayBottom, boxCy + 9);
+    if (showBox) overlayBottom = Math.max(overlayBottom, showValues ? medianValY : boxCy + 9);
   }
   const tickLblY = hasUniOverlay ? overlayBottom + 14 : axisY + 16;
   const H = tickLblY + 18; // tick labels + axis title
@@ -1637,7 +1639,7 @@ function EDAPlot({ rows, headers }) {
                     <line x1={loX} y1={sdBarY} x2={hiX} y2={sdBarY} stroke="#f59e0b" strokeWidth={2} />
                     <line x1={loX} y1={sdBarY - 4} x2={loX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
                     <line x1={hiX} y1={sdBarY - 4} x2={hiX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
-                    {showValues && <text x={labelX} y={sdBarY + 11} textAnchor="start" fontSize={9} fill="#d97706" fontWeight={700}>±1 SD = {parseFloat(xSummary.sd.toFixed(2))}</text>}
+                    {showValues && <text x={labelX} y={sdBarY + 3} textAnchor="start" fontSize={9} fill="#d97706" fontWeight={700}>±1 SD = {parseFloat(xSummary.sd.toFixed(2))}</text>}
                   </g>
                 );
               })()}
@@ -1647,7 +1649,7 @@ function EDAPlot({ rows, headers }) {
                 return (
                   <g>
                     <polygon points={mx + "," + axisY + " " + (mx - 6) + "," + meanBaseY + " " + (mx + 6) + "," + meanBaseY} fill="#10b981" stroke="#059669" strokeWidth={1} />
-                    {showValues && <text x={mx + 9} y={axisY + 5} textAnchor="start" fontSize={9} fill="#059669" fontWeight={700}>{fmtX(xSummary.mean)}</text>}
+                    {showValues && <text x={mx} y={meanValY} textAnchor="middle" fontSize={9} fill="#059669" fontWeight={700}>{fmtX(xSummary.mean)}</text>}
                   </g>
                 );
               })()}
@@ -1659,7 +1661,7 @@ function EDAPlot({ rows, headers }) {
                   <line x1={sx(xSummary.whiskerHi)} y1={boxCy - 6} x2={sx(xSummary.whiskerHi)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
                   <rect x={sx(xSummary.q1)} y={boxCy - 9} width={Math.max(1, sx(xSummary.q3) - sx(xSummary.q1))} height={18} fill="rgba(99,102,241,0.18)" stroke="#6366f1" strokeWidth={1.5} />
                   <line x1={sx(xSummary.median)} y1={boxCy - 9} x2={sx(xSummary.median)} y2={boxCy + 9} stroke="#6366f1" strokeWidth={2.5} />
-                  {showValues && <text x={sx(xSummary.median)} y={boxCy - 12} textAnchor="middle" fontSize={9} fontWeight={700} fill="#4338ca">{fmtX(xSummary.median)}</text>}
+                  {showValues && <text x={sx(xSummary.median)} y={medianValY} textAnchor="middle" fontSize={9} fontWeight={700} fill="#4338ca">{fmtX(xSummary.median)}</text>}
                 </g>
               )}
             </svg>
@@ -1944,7 +1946,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
               return { x: xData + dotR + 3 + (stacks[key] - 1) * hsp, y: sy(v) };
             });
             const color = COLORS[gi % COLORS.length];
-            const bx = xData - 26;                  // vertical boxplot, just left of the mean/SD cluster
+            const bx = xData - 32;                  // vertical boxplot, just left of the mean/SD cluster
             const sdMidX = xData - 5;               // ±SD runs vertically through the mean triangle
             return (
               <g key={cat}>
@@ -1961,14 +1963,21 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
                     <line x1={bx - 4} y1={sy(summary.whiskerHi)} x2={bx + 4} y2={sy(summary.whiskerHi)} stroke="#475569" strokeWidth={1.2} />
                     <rect x={bx - 6} y={sy(summary.q3)} width={12} height={Math.max(1, sy(summary.q1) - sy(summary.q3))} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
                     <line x1={bx - 6} y1={sy(summary.median)} x2={bx + 6} y2={sy(summary.median)} stroke={color} strokeWidth={2} />
-                    {showValues && <text x={bx} y={sy(summary.q1) + 12} textAnchor="middle" fontSize={9} fill="#4338ca" fontWeight={700}>{fmt(summary.median)}</text>}
+                    {showValues && <text x={bx - 9} y={sy(summary.median) + 3} textAnchor="end" fontSize={9} fill="#4338ca" fontWeight={700}>{fmt(summary.median)}</text>}
                   </g>
                 )}
-                {/* mean triangle — points right, tip on the data baseline */}
-                {showMean && summary && (
-                  <polygon points={xData + "," + sy(summary.mean) + " " + (xData - 10) + "," + (sy(summary.mean) - 5) + " " + (xData - 10) + "," + (sy(summary.mean) + 5)}
-                    fill="#10b981" stroke="#059669" strokeWidth={0.8} />
-                )}
+                {/* mean triangle — points right, tip on the data baseline; value just
+                    to the left of the triangle */}
+                {showMean && summary && (() => {
+                  const my = sy(summary.mean);
+                  return (
+                    <g>
+                      <polygon points={xData + "," + my + " " + (xData - 10) + "," + (my - 5) + " " + (xData - 10) + "," + (my + 5)}
+                        fill="#10b981" stroke="#059669" strokeWidth={0.8} />
+                      {showValues && <text x={xData - 13} y={my + 3} textAnchor="end" fontSize={9} fill="#059669" fontWeight={700}>{fmt(summary.mean)}</text>}
+                    </g>
+                  );
+                })()}
                 {/* ±1 SD — runs vertically through the mean triangle, centred on the mean */}
                 {showSD && summary && (() => {
                   const topY = sy(summary.mean + summary.sd), botY = sy(summary.mean - summary.sd);
@@ -2004,7 +2013,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
   // ── Horizontal orientation (default): numeric on X, groups stacked vertically ──
   const PL = 90, PR = 20, PT = 10, PB = 44;
   const iW = W - PL - PR;
-  const GROUP_H = 104;
+  const GROUP_H = 116;
   const H = PT + cats.length * GROUP_H + PB;
   const sx = v => PL + ((v - lo) / (hi - lo)) * iW;
 
@@ -2016,7 +2025,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
 
         {cats.map((cat, gi) => {
           const top = PT + gi * GROUP_H;
-          const baseY = top + GROUP_H - 44; // dots stack upward from here; mean/SD/box below
+          const baseY = top + GROUP_H - 52; // dots stack upward from here; mean/SD/box below
           const groupNums = rows.map(r => groupOf(r[catVar]) === cat ? toNum(r[numVar]) : NaN).filter(v => !isNaN(v));
           const summary = numericSummary(groupNums);
           // First pass: bin counts to find the tallest stack, so dots fit the band
@@ -2057,7 +2066,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
                     <line x1={loX} y1={y} x2={hiX} y2={y} stroke="#f59e0b" strokeWidth={2} />
                     <line x1={loX} y1={y - 3} x2={loX} y2={y + 3} stroke="#f59e0b" strokeWidth={2} />
                     <line x1={hiX} y1={y - 3} x2={hiX} y2={y + 3} stroke="#f59e0b" strokeWidth={2} />
-                    {showValues && <text x={labelX} y={y + 8} textAnchor="start" fontSize={8} fill="#d97706" fontWeight={700}>±SD {parseFloat(summary.sd.toFixed(2))}</text>}
+                    {showValues && <text x={labelX} y={y + 3} textAnchor="start" fontSize={8} fill="#d97706" fontWeight={700}>±SD {parseFloat(summary.sd.toFixed(2))}</text>}
                   </g>
                 );
               })()}
@@ -2067,13 +2076,13 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
                 return (
                   <g>
                     <polygon points={mx + "," + gb + " " + (mx - 5) + "," + (gb + 10) + " " + (mx + 5) + "," + (gb + 10)} fill="#10b981" stroke="#059669" strokeWidth={0.8} />
-                    {showValues && <text x={mx + 8} y={gb + 4} textAnchor="start" fontSize={9} fill="#059669" fontWeight={700}>{fmt(summary.mean)}</text>}
+                    {showValues && <text x={mx} y={gb + 20} textAnchor="middle" fontSize={9} fill="#059669" fontWeight={700}>{fmt(summary.mean)}</text>}
                   </g>
                 );
               })()}
               {/* boxplot — separated below */}
               {showBox && summary && (() => {
-                const by = baseY + dotR + 22;
+                const by = baseY + dotR + 32;
                 return (
                   <g>
                     <line x1={sx(summary.whiskerLo)} y1={by} x2={sx(summary.whiskerHi)} y2={by} stroke="#475569" strokeWidth={1.2} />
@@ -2081,7 +2090,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
                     <line x1={sx(summary.whiskerHi)} y1={by - 4} x2={sx(summary.whiskerHi)} y2={by + 4} stroke="#475569" strokeWidth={1.2} />
                     <rect x={sx(summary.q1)} y={by - 5} width={Math.max(1, sx(summary.q3) - sx(summary.q1))} height={10} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
                     <line x1={sx(summary.median)} y1={by - 5} x2={sx(summary.median)} y2={by + 5} stroke={color} strokeWidth={2} />
-                    {showValues && <text x={sx(summary.median)} y={by - 7} textAnchor="middle" fontSize={9} fill="#4338ca" fontWeight={700}>{fmt(summary.median)}</text>}
+                    {showValues && <text x={sx(summary.median)} y={by + 15} textAnchor="middle" fontSize={9} fill="#4338ca" fontWeight={700}>{fmt(summary.median)}</text>}
                   </g>
                 );
               })()}
