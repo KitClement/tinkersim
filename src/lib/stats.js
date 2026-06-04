@@ -61,6 +61,11 @@ function computeStat(stat, rows) {
     case "countVal":   return vals.filter(v => String(v) === String(stat.target)).length;
     case "proportion": return vals.length ? vals.filter(v => String(v) === String(stat.target)).length / vals.length : NaN;
     case "mean":       return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : NaN;
+    case "sd": {       // population SD, matching numericSummary (variance over n)
+      if (!nums.length) return NaN;
+      const m = nums.reduce((a, b) => a + b, 0) / nums.length;
+      return Math.sqrt(nums.reduce((a, b) => a + (b - m) ** 2, 0) / nums.length);
+    }
     case "median":     return nums.length ? quantile(sorted(), 0.5) : NaN;
     case "min":        return nums.length ? Math.min(...nums) : NaN;
     case "max":        return nums.length ? Math.max(...nums) : NaN;
@@ -78,10 +83,10 @@ function computeStat(stat, rows) {
 
 function statLabel(s) {
   const c = s.condVar ? " | " + s.condVar + "=\"" + s.condVal + "\"" : "", v = s.variable || "?";
-  const mp = { count:"count(" + v + c + ")", countVal:"count(" + v + "=\"" + s.target + "\"" + c + ")", proportion:"prop(" + v + "=\"" + s.target + "\"" + c + ")", mean:"mean(" + v + c + ")", median:"median(" + v + c + ")", min:"min(" + v + c + ")", max:"max(" + v + c + ")", q1:"Q1(" + v + c + ")", q3:"Q3(" + v + c + ")", slope:"slope(" + v + "~" + (s.variable2 || "?") + c + ")", intercept:"intercept(" + v + "~" + (s.variable2 || "?") + c + ")" };
+  const mp = { count:"count(" + v + c + ")", countVal:"count(" + v + "=\"" + s.target + "\"" + c + ")", proportion:"prop(" + v + "=\"" + s.target + "\"" + c + ")", mean:"mean(" + v + c + ")", sd:"SD(" + v + c + ")", median:"median(" + v + c + ")", min:"min(" + v + c + ")", max:"max(" + v + c + ")", q1:"Q1(" + v + c + ")", q3:"Q3(" + v + c + ")", slope:"slope(" + v + "~" + (s.variable2 || "?") + c + ")", intercept:"intercept(" + v + "~" + (s.variable2 || "?") + c + ")" };
   return mp[s.fn] || s.fn;
 }
 
-const FN_OPTS = [{ v:"mean", l:"Mean" }, { v:"median", l:"Median" }, { v:"proportion", l:"Proportion" }, { v:"countVal", l:"Count of value" }, { v:"count", l:"Count (n)" }, { v:"min", l:"Min" }, { v:"max", l:"Max" }, { v:"q1", l:"Q1" }, { v:"q3", l:"Q3" }, { v:"slope", l:"LS Slope" }, { v:"intercept", l:"LS Intercept" }];
+const FN_OPTS = [{ v:"mean", l:"Mean" }, { v:"sd", l:"SD" }, { v:"median", l:"Median" }, { v:"proportion", l:"Proportion" }, { v:"countVal", l:"Count of value" }, { v:"count", l:"Count (n)" }, { v:"min", l:"Min" }, { v:"max", l:"Max" }, { v:"q1", l:"Q1" }, { v:"q3", l:"Q3" }, { v:"slope", l:"LS Slope" }, { v:"intercept", l:"LS Intercept" }];
 
 export { quantile, numericSummary, lsFit, computeStat, statLabel, FN_OPTS };

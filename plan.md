@@ -164,19 +164,42 @@ Do the `components/` + `lib/` split now, as part of this phase.
       EDA still renders (table left + SVG plot right, Mean overlay works), production
       build passes, no console errors.
 
-### Phase 2 — Tracked-statistic data model
-- [ ] Add `trackedStats` state (array of stat specs) + a `collectRows` accumulator
-      (array of rows keyed by stat id).
-- [ ] Implement "＋ track" from a Sample Results overlay → push a stat spec
-      (dedupe by `statLabel`). Cover all authoring modes:
-      - univariate numeric overlay → unconditional stat;
-      - cat × cat cell → conditional proportion (`condVar`/`condVal`);
-      - num × cat group → conditional numeric stat (`condVar`/`condVal`);
-      - num × num LS line → slope / intercept (`variable2`).
-- [ ] Render the **Collect Statistics data table** from `collectRows` (mirror
-      `DataTable`): one column per tracked stat, remove-column control.
-- [ ] **Done when:** Selecting any overlay/cell/line adds the correctly-scoped
-      column; removing it drops the column.
+### Phase 2 — Tracked-statistic data model ✅
+- [x] Add `trackedStats` state (array of stat specs) + a `collectRows` accumulator
+      (array of rows keyed by stat id). → `App.jsx`; `trackStat` dedupes by
+      `statLabel`, `untrackStat` drops a column. `collectRows` stays empty until
+      Phase 3 wires accumulation.
+- [x] Implement tracking from a Sample Results plot → toggle a stat spec (add, or
+      remove if the same `statLabel` is already tracked). **Interaction (revised):
+      click the number that shows the statistic on the plot** — no chips. Principle:
+      *only a statistic whose number is currently visible can be collected* ("why
+      track a number the student hasn't seen?"). Gated on the optional `onTrackStat`
+      prop, so EDA shows no track UI and renders identically. Helpers `TrackText`
+      (SVG) / `CatNum` (HTML) turn a value into a click-to-toggle button. Modes:
+      - univariate numeric → click the mean / median / SD value labels (overlay
+        values are force-shown in Sample Results, so the "Show values" toggle is
+        hidden there);
+      - cat × cat → click a cell's **count** (→ `countVal`) or **percent**
+        (→ `proportion`) number, each conditioned on the cell (`condVar`/`condVal`);
+        gated by the Count/Percent toggles (neither on ⇒ nothing collectable);
+      - uni-cat → click a section's count/percent number (unconditional);
+      - num × cat group → click a group's mean / median / SD value
+        (`condVar`/`condVal`);
+      - num × num LS line → click the slope / intercept value (`variable2`).
+      - OTHER/collapsed buckets stay non-clickable (no clean target).
+      - Added an `sd` case to `computeStat`/`statLabel`/`FN_OPTS` (population SD,
+        matching `numericSummary`) so SD is trackable. Q1/Q3/min/max are not
+        click-trackable (not shown as standalone numbers).
+- [x] Render the **Collect Statistics data table** from `collectRows` (mirror
+      `DataTable`): `CollectTable` — one column per tracked stat (named by
+      `statLabel`), per-column remove (×) control. Legacy `StatDefiner` UI kept
+      below for now (retired in Phase 6).
+- [x] **Done when:** Clicking any plot number adds the correctly-scoped column;
+      clicking it again (or the table's × ) drops it. **Verified** in `npm run dev`
+      across uni-cat, cat × cat, univariate numeric, num × cat, and num × num: each
+      number adds the right `statLabel` column, clicking a tracked number toggles it
+      off, the no-stats-enabled gate hides all targets, OTHER buckets are inert, no
+      console errors; production build passes.
 
 ### Phase 3 — Accumulation wiring + invalidation guards
 - [ ] Per-run (always on): on each "Draw Sample" completion, compute every tracked

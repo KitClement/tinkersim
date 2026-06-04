@@ -5,7 +5,7 @@ import { computeStat, statLabel } from "./lib/stats";
 import { sampleSpinner, makeDrawState, drawStacks, drawMixer, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
 import { DeviceCard } from "./components/devices";
 import { CopyColumnButton } from "./components/ui";
-import { EDAPlot, SampleResults, StatDefiner, StatDistPlot } from "./components/plots";
+import { EDAPlot, SampleResults, StatDefiner, StatDistPlot, CollectTable } from "./components/plots";
 
 export default function App() {
   // CSV / EDA dataset
@@ -23,6 +23,21 @@ export default function App() {
   // Per-type counter for default device names (spin1, mix2, …). Kept in a ref
   // so it persists across renders but resets cleanly if the app remounts.
   const devCounts = useRef({});
+
+  // Tracked-statistic data model (Phase 2): columns authored by selecting overlays
+  // in Sample Results; `collectRows` is the accumulator (one row per collected
+  // sample, keyed by stat id) that later phases will fill.
+  const [trackedStats, setTrackedStats] = useState([]);
+  const [collectRows, setCollectRows] = useState([]);
+
+  // Toggle tracking of a stat (clicking its number on the plot adds it, or removes
+  // it if that exact statistic — same statLabel — is already tracked).
+  const trackStat = spec => setTrackedStats(ts => {
+    const lbl = statLabel(spec);
+    if (ts.some(s => statLabel(s) === lbl)) return ts.filter(s => statLabel(s) !== lbl);
+    return [...ts, { id:uid(), target:"", condVar:"", condVal:"", variable2:"", ...spec }];
+  });
+  const untrackStat = id => setTrackedStats(ts => ts.filter(s => s.id !== id));
 
   const [stats, setStats] = useState([{ id:uid(), fn:"proportion", variable:"", target:"", condVar:"", condVal:"", variable2:"" }]);
   const [repetitions, setRepetitions] = useState(500);
@@ -223,7 +238,7 @@ export default function App() {
           <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>Sample Results</span>
           {sampleData.length > 0 && <span style={{ fontSize:11, color:"#aaa" }}>n = {sampleData.length}</span>}
         </div>
-        <SampleResults sampleData={sampleData} varNames={varNames} />
+        <SampleResults sampleData={sampleData} varNames={varNames} onTrackStat={trackStat} trackedStats={trackedStats} />
       </div>
 
       {/* Collect Statistics */}
@@ -248,6 +263,14 @@ export default function App() {
               }} style={{ ...btnNav, fontSize:12 }}>⬇ CSV</button>
             )}
           </div>
+        </div>
+        {/* Tracked-statistic columns (authored from the Sample Results plot) */}
+        <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start", marginBottom:14 }}>
+          <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} />
+        </div>
+
+        <div style={{ fontSize:11, fontWeight:700, color:"#bbb", letterSpacing:1, textTransform:"uppercase", borderTop:"1px solid #f0f0f0", paddingTop:10, marginBottom:8 }}>
+          Or define statistics manually
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:12 }}>
           {stats.map((s, i) => (

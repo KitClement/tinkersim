@@ -6,6 +6,49 @@ import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
 import { Sel, ChkLabel } from "./ui";
 
+// ── Click-to-track helpers ─────────────────────────────────────────────────────
+// A statistic is promoted into Collect Statistics by clicking the number that
+// shows it on the plot (not a separate chip). Both helpers fall back to a plain,
+// non-interactive label when no `onTrackStat` is supplied (e.g. the EDA plot) or
+// when `spec` is null (e.g. an "Other" bucket with no clean target), so existing
+// plots render pixel-identically there.
+
+// SVG value label that toggles tracking of `spec` on click.
+function TrackText({ x, y, anchor = "middle", color, fontSize = 9, label, spec, trackable, trackedLabels, onTrackStat }) {
+  if (!trackable || !spec) {
+    return <text x={x} y={y} textAnchor={anchor} fontSize={fontSize} fill={color} fontWeight={700}>{label}</text>;
+  }
+  const lbl = statLabel(spec);
+  const tracked = trackedLabels && trackedLabels.has(lbl);
+  const w = String(label).length * fontSize * 0.62 + 8, h = fontSize + 5;
+  const rx = anchor === "start" ? x - 4 : anchor === "end" ? x - w + 4 : x - w / 2;
+  return (
+    <g style={{ cursor:"pointer" }} onClick={e => { e.stopPropagation(); onTrackStat(spec); }}>
+      <title>{tracked ? "Tracking " + lbl + " — click to remove" : "Click to track " + lbl}</title>
+      <rect x={rx} y={y - h + 3} width={w} height={h} rx={3}
+        fill={tracked ? "#c7d2fe" : "#eef2ff"} stroke={tracked ? "#6366f1" : "#c7d2fe"} strokeWidth={1} />
+      <text x={x} y={y} textAnchor={anchor} fontSize={fontSize} fill={tracked ? "#3730a3" : color} fontWeight={800}>{label}</text>
+    </g>
+  );
+}
+
+// HTML count/percent number (cat plots) that toggles tracking of `spec` on click.
+function CatNum({ text, spec, dim, trackable, trackedLabels, onTrackStat }) {
+  if (!trackable || !spec) return <span style={{ color: dim ? "#bbb" : "#3730a3" }}>{text}</span>;
+  const lbl = statLabel(spec);
+  const tracked = trackedLabels && trackedLabels.has(lbl);
+  return (
+    <span onClick={e => { e.stopPropagation(); onTrackStat(spec); }}
+      title={tracked ? "Tracking " + lbl + " — click to remove" : "Click to track " + lbl}
+      style={{ cursor:"pointer", padding:"0 3px", borderRadius:4, fontWeight:700,
+        background: tracked ? "#c7d2fe" : "transparent",
+        color: tracked ? "#1e1b4b" : "#4338ca",
+        boxShadow: tracked ? "none" : "inset 0 -1px 0 #a5b4fc" }}>
+      {text}
+    </span>
+  );
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // PLOT — the shared, interactive plot primitive (controls + plot body, no table).
 // Used by both EDA and Sample Results. X/Y selection is *controlled* by the parent
@@ -14,7 +57,7 @@ import { Sel, ChkLabel } from "./ui";
 //   1) cat × cat grid   2) num × cat split dot plots
 //   3) single categorical bins   4) scatter / univariate numeric (SVG)
 // ══════════════════════════════════════════════════════════════════════════════
-function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width }) {
+function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat, trackedLabels }) {
   const [dotSize, setDotSize] = useState(5);
 
   // Stat overlay toggles
@@ -115,6 +158,15 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width }) {
   const showCatToggles = (!bivariate && !xNumeric) || (bivariate && !xNumeric && !yNumeric);
   const toggleExpand = () => setExpandCats(e => !e);
 
+  // ── Click-to-track ──
+  // When a parent supplies onTrackStat (Sample Results), the numbers drawn on the
+  // plot become clickable: clicking one toggles tracking that statistic in Collect
+  // Statistics. Numeric overlay values are forced visible here (so there is always
+  // a number to click), which makes the separate "Show values" toggle redundant.
+  const trackable = !!onTrackStat;
+  const showVals = showValues || trackable;
+  const trackProps = { trackable, trackedLabels, onTrackStat };
+
   return (
     <div ref={plotRef} style={{ flex:"2 1 460px", minWidth:320 }}>
       {/* Controls */}
@@ -138,7 +190,7 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width }) {
         {bivariate && xNumeric && yNumeric && (
           <ChkLabel checked={showLS} onChange={setShowLS} label="📈 LS Line" />
         )}
-        {(showStatToggles || (bivariate && xNumeric && yNumeric)) && (
+        {!trackable && (showStatToggles || (bivariate && xNumeric && yNumeric)) && (
           <ChkLabel checked={showValues} onChange={setShowValues} label="🔢 Show values" />
         )}
         {showCatToggles && (
@@ -149,12 +201,20 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width }) {
         )}
       </div>
 
+      {/* Click-to-track hint */}
+      {trackable && (
+        <div style={{ fontSize:11, color:"#bbb", marginBottom:8 }}>
+          💡 Click a number on the plot to collect that statistic (click again to stop).
+        </div>
+      )}
+
       {/* Plot — rendering depends on variable types */}
       {(() => {
         // MODE 1: both categorical → grid of cells with stacked dots + count/%
         if (bivariate && !xNumeric && !yNumeric) {
           return <CatCatGrid rows={rows} xVar={xVar} yVar={yVar} R={R} width={W}
-            showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} />;
+            showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand}
+            {...trackProps} />;
         }
         // MODE 2: one categorical + one numeric → split dot plots by category.
         // Respect the axis choice: numeric-X stays horizontal; numeric-Y draws
@@ -165,13 +225,13 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width }) {
           const numTime = xNumeric ? xTime : yTime;
           return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} R={R} width={W} isTime={numTime}
             orientation={xNumeric ? "h" : "v"}
-            showBox={showBox} showMean={showMean} showSD={showSD} showValues={showValues}
-            expanded={expandCats} onToggleExpand={toggleExpand} />;
+            showBox={showBox} showMean={showMean} showSD={showSD} showValues={showVals}
+            expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} />;
         }
         // MODE 3: single categorical → binned stacked-dot cells
         if (!bivariate && !xNumeric) {
           return <UniCatPlot rows={rows} catVar={xVar} R={R} width={W}
-            showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} />;
+            showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} />;
         }
         // MODE 4: scatter (both numeric) or univariate numeric → SVG
         return (
@@ -208,7 +268,17 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width }) {
               return (
                 <g>
                   <line x1={sx(x1)} y1={PT + iH - yS.scale(y1)} x2={sx(x2)} y2={PT + iH - yS.scale(y2v)} stroke="#ef4444" strokeWidth={2} />
-                  {showValues && (
+                  {trackable ? (
+                    // Slope and intercept are individually clickable to track.
+                    <g>
+                      <TrackText x={PL + iW - 4} y={PT + 12} anchor="end" color="#ef4444" fontSize={10}
+                        label={"slope " + parseFloat(ls.slope.toFixed(3))}
+                        spec={{ fn:"slope", variable:xVar, variable2:yVar }} {...trackProps} />
+                      <TrackText x={PL + iW - 4} y={PT + 28} anchor="end" color="#ef4444" fontSize={10}
+                        label={"intercept " + parseFloat(ls.intercept.toFixed(3))}
+                        spec={{ fn:"intercept", variable:xVar, variable2:yVar }} {...trackProps} />
+                    </g>
+                  ) : showValues && (
                     <text x={PL + iW - 4} y={PT + 12} textAnchor="end" fontSize={10} fill="#ef4444" fontWeight={700}>
                       ŷ = {parseFloat(ls.slope.toFixed(3))}x + {parseFloat(ls.intercept.toFixed(3))} · R² = {parseFloat(ls.r2.toFixed(3))}
                     </text>
@@ -225,7 +295,8 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width }) {
                   <line x1={loX} y1={sdBarY} x2={hiX} y2={sdBarY} stroke="#f59e0b" strokeWidth={2} />
                   <line x1={loX} y1={sdBarY - 4} x2={loX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
                   <line x1={hiX} y1={sdBarY - 4} x2={hiX} y2={sdBarY + 4} stroke="#f59e0b" strokeWidth={2} />
-                  {showValues && <text x={labelX} y={sdBarY + 3} textAnchor="start" fontSize={9} fill="#d97706" fontWeight={700}>±1 SD = {parseFloat(xSummary.sd.toFixed(2))}</text>}
+                  {showVals && <TrackText x={labelX} y={sdBarY + 3} anchor="start" color="#d97706" fontSize={9}
+                    label={"±1 SD = " + parseFloat(xSummary.sd.toFixed(2))} spec={{ fn:"sd", variable:xVar }} {...trackProps} />}
                 </g>
               );
             })()}
@@ -235,7 +306,8 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width }) {
               return (
                 <g>
                   <polygon points={mx + "," + axisY + " " + (mx - 6) + "," + meanBaseY + " " + (mx + 6) + "," + meanBaseY} fill="#10b981" stroke="#059669" strokeWidth={1} />
-                  {showValues && <text x={mx} y={meanValY} textAnchor="middle" fontSize={9} fill="#059669" fontWeight={700}>{fmtX(xSummary.mean)}</text>}
+                  {showVals && <TrackText x={mx} y={meanValY} anchor="middle" color="#059669" fontSize={9}
+                    label={fmtX(xSummary.mean)} spec={{ fn:"mean", variable:xVar }} {...trackProps} />}
                 </g>
               );
             })()}
@@ -247,7 +319,8 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width }) {
                 <line x1={sx(xSummary.whiskerHi)} y1={boxCy - 6} x2={sx(xSummary.whiskerHi)} y2={boxCy + 6} stroke="#475569" strokeWidth={1.5} />
                 <rect x={sx(xSummary.q1)} y={boxCy - 9} width={Math.max(1, sx(xSummary.q3) - sx(xSummary.q1))} height={18} fill="rgba(99,102,241,0.18)" stroke="#6366f1" strokeWidth={1.5} />
                 <line x1={sx(xSummary.median)} y1={boxCy - 9} x2={sx(xSummary.median)} y2={boxCy + 9} stroke="#6366f1" strokeWidth={2.5} />
-                {showValues && <text x={sx(xSummary.median)} y={medianValY} textAnchor="middle" fontSize={9} fontWeight={700} fill="#4338ca">{fmtX(xSummary.median)}</text>}
+                {showVals && <TrackText x={sx(xSummary.median)} y={medianValY} anchor="middle" color="#4338ca" fontSize={9}
+                  label={fmtX(xSummary.median)} spec={{ fn:"median", variable:xVar }} {...trackProps} />}
               </g>
             )}
           </svg>
@@ -352,10 +425,11 @@ function EDAPlot({ rows, headers }) {
 // raw draws of a sampler run. The table is chronological: newest rows append at
 // the BOTTOM and the scroll view auto-follows as draws stream in.
 // ══════════════════════════════════════════════════════════════════════════════
-function SampleResults({ sampleData, varNames }) {
+function SampleResults({ sampleData, varNames, onTrackStat, trackedStats }) {
   const [xVar, setXVar] = useState(varNames[0] || "");
   const [yVar, setYVar] = useState("none");
   const scrollRef = useRef(null);
+  const trackedLabels = useMemo(() => new Set((trackedStats || []).map(statLabel)), [trackedStats]);
 
   // Auto-scroll the table to the bottom as new draws arrive
   useEffect(() => {
@@ -403,7 +477,8 @@ function SampleResults({ sampleData, varNames }) {
         {sampleData.length > MAX_ROWS && <div style={{ fontSize:10, color:"#aaa", marginTop:4 }}>Showing last {MAX_ROWS} of {sampleData.length} draws</div>}
       </div>
       {/* RIGHT: shared interactive plot */}
-      <Plot rows={sampleData} headers={varNames} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar} />
+      <Plot rows={sampleData} headers={varNames} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
+        onTrackStat={onTrackStat} trackedLabels={trackedLabels} />
     </div>
   );
 }
@@ -448,10 +523,70 @@ function DataTable({ rows, headers, xVar, yVar }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// COLLECT TABLE — one column per tracked statistic, one row per collected sample.
+// Mirrors DataTable. Rows live in `collectRows` (keyed by stat id) and accumulate
+// across runs; columns are the `trackedStats` specs (named by statLabel), each with
+// a remove control. (Accumulation itself is wired in a later phase.)
+// ══════════════════════════════════════════════════════════════════════════════
+function CollectTable({ trackedStats, collectRows, onRemove }) {
+  if (!trackedStats.length) {
+    return (
+      <div style={{ flex:"1 1 280px", minWidth:220, color:"#bbb", fontSize:13, padding:"16px 8px", lineHeight:1.5 }}>
+        No tracked statistics yet. In <strong>Sample Results</strong> above, enable an overlay
+        (or click a two-way table cell) and press <strong style={{ color:"#6366f1" }}>＋ track</strong> to add a column here.
+      </div>
+    );
+  }
+  const MAX_ROWS = 200;
+  const shown = collectRows.slice(-MAX_ROWS);
+  const offset = collectRows.length - shown.length;
+  const fmt = v => (typeof v === "number" ? (isFinite(v) ? parseFloat(v.toFixed(4)) : "—") : v);
+  return (
+    <div style={{ flex:"1 1 280px", minWidth:220 }}>
+      <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>
+        Collected statistics {collectRows.length > 0 && <span style={{ color:"#ccc", fontWeight:600 }}>· {collectRows.length} rows</span>}
+      </div>
+      <div style={{ maxHeight:300, overflow:"auto", border:"1px solid #eee", borderRadius:8 }}>
+        <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
+          <thead>
+            <tr>
+              <th style={{ position:"sticky", top:0, background:"#f8f9fa", color:"#bbb", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid #e5e7eb" }}>#</th>
+              {trackedStats.map(s => (
+                <th key={s.id} style={{ position:"sticky", top:0, background:"#f1f5f9", color:"#334155", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>
+                  <span style={{ fontFamily:"monospace", color:"#4338ca" }}>{statLabel(s)}</span>
+                  <button onClick={() => onRemove(s.id)} title="Remove column" style={{ ...btnX, fontSize:13, marginLeft:4, verticalAlign:"middle" }}>×</button>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {shown.length === 0 ? (
+              <tr>
+                <td colSpan={trackedStats.length + 1} style={{ padding:"12px 8px", color:"#bbb", textAlign:"center" }}>
+                  No samples collected yet.
+                </td>
+              </tr>
+            ) : shown.map((row, i) => (
+              <tr key={offset + i} style={{ borderBottom:"1px solid #f5f5f5" }}>
+                <td style={{ color:"#ccc", padding:"3px 6px", textAlign:"right" }}>{offset + i + 1}</td>
+                {trackedStats.map(s => (
+                  <td key={s.id} style={{ padding:"3px 8px", color:"#555", whiteSpace:"nowrap" }}>{fmt(row[s.id])}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {collectRows.length > MAX_ROWS && <div style={{ fontSize:10, color:"#aaa", marginTop:4 }}>Showing last {MAX_ROWS} of {collectRows.length} rows</div>}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // UNI-CAT PLOT — single categorical variable as binned stacked-dot columns
 // (a 1-D version of CatCatGrid). Collapses to top 10 + "Other" past 10 categories.
 // ══════════════════════════════════════════════════════════════════════════════
-function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand }) {
+function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat }) {
   const counts = {};
   rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) counts[v] = (counts[v] || 0) + 1; });
   const allCats = Object.keys(counts).sort();
@@ -476,12 +611,17 @@ function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false,
           const cnt = cellCount(c);
           const pct = total ? Math.round(cnt / total * 100) : 0;
           const color = COLORS[ci % COLORS.length];
+          // Each visible number is a click target: count → count of catVar=c;
+          // percent → proportion catVar=c. "Other" has no clean target.
+          const colTrackable = trackable && c !== OTHER_CAT;
+          const base = { variable:catVar, target:String(c) };
           return (
             <div key={c} style={{ flex:"1 1 0", minWidth:48, maxWidth:180, borderLeft: ci ? "1px solid #f0f0f0" : "none",
               display:"flex", flexDirection:"column", alignItems:"center", padding:"0 6px", boxSizing:"border-box" }}>
               {hasLabel && (
-                <div style={{ fontSize:12, fontWeight:600, color: cnt > 0 ? "#3730a3" : "#bbb", minHeight:16 }}>
-                  {showCount && cnt}{showCount && showPct ? " " : ""}{showPct && `(${pct}%)`}
+                <div style={{ fontSize:12, fontWeight:600, minHeight:16, display:"flex", gap:4 }}>
+                  {showCount && <CatNum text={cnt} dim={cnt === 0} spec={colTrackable ? { ...base, fn:"countVal" } : null} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} />}
+                  {showPct && <CatNum text={`(${pct}%)`} dim={cnt === 0} spec={colTrackable ? { ...base, fn:"proportion" } : null} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} />}
                 </div>
               )}
               {/* bottom-anchored dot grid: fills a row left→right, then stacks
@@ -517,7 +657,7 @@ function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false,
 // reference layout where the colored number = P(row | column).
 // ══════════════════════════════════════════════════════════════════════════════
 
-function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand }) {
+function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat }) {
   // Per-axis counts drive collapsing of high-cardinality axes (>10 categories)
   const xCount = {}, yCount = {};
   rows.forEach(r => {
@@ -578,13 +718,19 @@ function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = fa
               const c = grid[yc][xc];
               const rowTot = rowTotals[yc] || 0;
               const pct = rowTot ? Math.round(c / rowTot * 100) : 0;
+              // Each visible number is a click target: count → count of X=xc given
+              // Y=yc; percent → that row-conditional proportion P(X=xc | Y=yc).
+              // OTHER buckets can't form a clean target, so they stay non-clickable.
+              const cellTrackable = trackable && xc !== OTHER_CAT && yc !== OTHER_CAT;
+              const base = { variable:xVar, target:String(xc), condVar:yVar, condVal:String(yc) };
               return (
                 <div key={xc} style={{ flex:"1 1 0", minWidth:CELL_MIN, maxWidth:CELL_MAX, height:CELL_H,
                   borderLeft:"1px solid #eee", padding:"4px 6px", boxSizing:"border-box",
                   display:"flex", flexDirection:"column" }}>
                   {hasLabel && (
-                    <div style={{ fontSize:12, fontWeight:600, color: c > 0 ? "#3730a3" : "#bbb" }}>
-                      {showCount && c}{showCount && showPct ? " " : ""}{showPct && `(${pct}%)`}
+                    <div style={{ fontSize:12, fontWeight:600, display:"flex", gap:4, flexWrap:"wrap" }}>
+                      {showCount && <CatNum text={c} dim={c === 0} spec={cellTrackable ? { ...base, fn:"countVal" } : null} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} />}
+                      {showPct && <CatNum text={`(${pct}%)`} dim={c === 0} spec={cellTrackable ? { ...base, fn:"proportion" } : null} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} />}
                     </div>
                   )}
                   {/* Stacked dots */}
@@ -628,7 +774,11 @@ function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = fa
 // variable, for comparing distributions across groups. Optional box/mean/SD per group.
 // ══════════════════════════════════════════════════════════════════════════════
 
-function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand }) {
+function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat }) {
+  // Per-group tracking spec: a numeric stat conditioned on this group (null for the
+  // "Other" bucket or when the plot isn't trackable).
+  const grpSpec = (cat, fn) => (trackable && cat !== OTHER_CAT) ? { fn, variable:numVar, condVar:catVar, condVal:String(cat) } : null;
+  const tp = { trackable, trackedLabels, onTrackStat };
   // Collapse high-cardinality grouping variable into top 10 + "Other"
   const catCount = {};
   rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) catCount[v] = (catCount[v] || 0) + 1; });
@@ -702,7 +852,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
                     <line x1={bx - 4} y1={sy(summary.whiskerHi)} x2={bx + 4} y2={sy(summary.whiskerHi)} stroke="#475569" strokeWidth={1.2} />
                     <rect x={bx - 6} y={sy(summary.q3)} width={12} height={Math.max(1, sy(summary.q1) - sy(summary.q3))} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
                     <line x1={bx - 6} y1={sy(summary.median)} x2={bx + 6} y2={sy(summary.median)} stroke={color} strokeWidth={2} />
-                    {showValues && <text x={bx - 9} y={sy(summary.median) + 3} textAnchor="end" fontSize={9} fill="#4338ca" fontWeight={700}>{fmt(summary.median)}</text>}
+                    {showValues && <TrackText x={bx - 9} y={sy(summary.median) + 3} anchor="end" color="#4338ca" fontSize={9} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}
                   </g>
                 )}
                 {/* mean triangle — points right, tip on the data baseline; value just
@@ -713,7 +863,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
                     <g>
                       <polygon points={xData + "," + my + " " + (xData - 10) + "," + (my - 5) + " " + (xData - 10) + "," + (my + 5)}
                         fill="#10b981" stroke="#059669" strokeWidth={0.8} />
-                      {showValues && <text x={xData - 13} y={my + 3} textAnchor="end" fontSize={9} fill="#059669" fontWeight={700}>{fmt(summary.mean)}</text>}
+                      {showValues && <TrackText x={xData - 13} y={my + 3} anchor="end" color="#059669" fontSize={9} label={fmt(summary.mean)} spec={grpSpec(cat, "mean")} {...tp} />}
                     </g>
                   );
                 })()}
@@ -726,7 +876,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
                       <line x1={sdMidX} y1={topY} x2={sdMidX} y2={botY} stroke="#f59e0b" strokeWidth={2} />
                       <line x1={sdMidX - 3} y1={topY} x2={sdMidX + 3} y2={topY} stroke="#f59e0b" strokeWidth={2} />
                       <line x1={sdMidX - 3} y1={botY} x2={sdMidX + 3} y2={botY} stroke="#f59e0b" strokeWidth={2} />
-                      {showValues && <text x={sdMidX} y={labelY} textAnchor="middle" fontSize={8} fill="#d97706" fontWeight={700}>±SD {parseFloat(summary.sd.toFixed(2))}</text>}
+                      {showValues && <TrackText x={sdMidX} y={labelY} anchor="middle" color="#d97706" fontSize={8} label={"±SD " + parseFloat(summary.sd.toFixed(2))} spec={grpSpec(cat, "sd")} {...tp} />}
                     </g>
                   );
                 })()}
@@ -805,7 +955,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
                     <line x1={loX} y1={y} x2={hiX} y2={y} stroke="#f59e0b" strokeWidth={2} />
                     <line x1={loX} y1={y - 3} x2={loX} y2={y + 3} stroke="#f59e0b" strokeWidth={2} />
                     <line x1={hiX} y1={y - 3} x2={hiX} y2={y + 3} stroke="#f59e0b" strokeWidth={2} />
-                    {showValues && <text x={labelX} y={y + 3} textAnchor="start" fontSize={8} fill="#d97706" fontWeight={700}>±SD {parseFloat(summary.sd.toFixed(2))}</text>}
+                    {showValues && <TrackText x={labelX} y={y + 3} anchor="start" color="#d97706" fontSize={8} label={"±SD " + parseFloat(summary.sd.toFixed(2))} spec={grpSpec(cat, "sd")} {...tp} />}
                   </g>
                 );
               })()}
@@ -815,7 +965,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
                 return (
                   <g>
                     <polygon points={mx + "," + gb + " " + (mx - 5) + "," + (gb + 10) + " " + (mx + 5) + "," + (gb + 10)} fill="#10b981" stroke="#059669" strokeWidth={0.8} />
-                    {showValues && <text x={mx} y={gb + 20} textAnchor="middle" fontSize={9} fill="#059669" fontWeight={700}>{fmt(summary.mean)}</text>}
+                    {showValues && <TrackText x={mx} y={gb + 20} anchor="middle" color="#059669" fontSize={9} label={fmt(summary.mean)} spec={grpSpec(cat, "mean")} {...tp} />}
                   </g>
                 );
               })()}
@@ -829,7 +979,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
                     <line x1={sx(summary.whiskerHi)} y1={by - 4} x2={sx(summary.whiskerHi)} y2={by + 4} stroke="#475569" strokeWidth={1.2} />
                     <rect x={sx(summary.q1)} y={by - 5} width={Math.max(1, sx(summary.q3) - sx(summary.q1))} height={10} fill="rgba(99,102,241,0.15)" stroke={color} strokeWidth={1.2} />
                     <line x1={sx(summary.median)} y1={by - 5} x2={sx(summary.median)} y2={by + 5} stroke={color} strokeWidth={2} />
-                    {showValues && <text x={sx(summary.median)} y={by + 15} textAnchor="middle" fontSize={9} fill="#4338ca" fontWeight={700}>{fmt(summary.median)}</text>}
+                    {showValues && <TrackText x={sx(summary.median)} y={by + 15} anchor="middle" color="#4338ca" fontSize={9} label={fmt(summary.median)} spec={grpSpec(cat, "median")} {...tp} />}
                   </g>
                 );
               })()}
@@ -857,4 +1007,4 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
 }
 
 
-export { Plot, SampleResults, StatDefiner, StatDistPlot, EDAPlot, DataTable, UniCatPlot, CatCatGrid, SplitDotPlots };
+export { Plot, SampleResults, StatDefiner, StatDistPlot, EDAPlot, DataTable, CollectTable, UniCatPlot, CatCatGrid, SplitDotPlots };
