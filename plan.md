@@ -193,7 +193,7 @@ Do the `components/` + `lib/` split now, as part of this phase.
 - [x] Render the **Collect Statistics data table** from `collectRows` (mirror
       `DataTable`): `CollectTable` — one column per tracked stat (named by
       `statLabel`), per-column remove (×) control. Legacy `StatDefiner` UI kept
-      below for now (retired in Phase 6).
+      below for now (retired in Phase 7).
 - [x] **Done when:** Clicking any plot number adds the correctly-scoped column;
       clicking it again (or the table's × ) drops it. **Verified** in `npm run dev`
       across uni-cat, cat × cat, univariate numeric, num × cat, and num × num: each
@@ -201,21 +201,52 @@ Do the `components/` + `lib/` split now, as part of this phase.
       off, the no-stats-enabled gate hides all targets, OTHER buckets are inert, no
       console errors; production build passes.
 
-### Phase 3 — Accumulation wiring + invalidation guards
-- [ ] Per-run (always on): on each "Draw Sample" completion, compute every tracked
-      stat on the finished sample (`computeStat`) and append one row to
-      `collectRows`.
-- [ ] Batch: "Collect N" (default 500) runs the internal draw loop (reuse the
-      `doCollect` chunked-rAF pattern + shared draw helpers) and appends N rows.
-- [ ] **Sample-size change guard:** intercept `setSampleSize`; if `collectRows` is
-      non-empty, confirm "this clears collected results (columns kept)" → clear rows,
-      keep `trackedStats`.
-- [ ] **Pipeline change guard:** intercept device edit/remove; if it changes/removes
-      a variable any tracked stat depends on, confirm "this deletes existing
-      statistics in the table" → clear rows and drop now-invalid columns.
-- [ ] Manual clear/reset control for the accumulator.
-- [ ] **Done when:** Both paths grow the same table, the two guards fire correctly,
-      and behavior never diverges in with/without-replacement counting.
+### Phase 3 — Accumulation wiring + invalidation guards ✅
+- [x] Per-run (always on): `doSample`'s `onDone` computes every tracked stat on the
+      finished sample (`computeStat`) and appends one row to `collectRows` (skipped
+      if the run was cancelled). `trackedStats` added to the `useCallback` deps so the
+      closure stays fresh.
+- [x] **Seed the current sample immediately.** A finished draw is stashed as
+      `currentSample = { id, rows }` and its `collectRows` row is tagged with that id.
+      Clicking **track** then seeds the value from the *already-drawn* sample at once
+      (its number is on the plot now) instead of waiting for the next run: tracking
+      updates the current sample's row in place, or creates it if nothing was tracked
+      when the sample was drawn. Batch/guard clears also reset `currentSample`.
+- [x] Batch: "Collect N" (default 500, `batchSize`) → `doCollectTracked` runs the
+      chunked-rAF loop and appends N rows. Extracted a shared, non-animated
+      `drawSample(pipeline, sampleSize)` into `lib/sampling.js` (built on
+      `makeDrawState`/`drawStacks`/`drawMixer`) and re-pointed **both** `doCollect`
+      (legacy) and `doCollectTracked` at it, so the with/without-replacement counting
+      cannot diverge between paths.
+- [x] **Sample-size change guard:** `changeSampleSize` intercepts the `n=` input; if
+      `collectRows` is non-empty, confirms → clears rows, keeps `trackedStats`.
+- [x] **Pipeline change guard:** `updDevice`/`remDevice` intercept edit/remove. The
+      edit guard fires only on a *distribution-structure* change — `samplingShape`
+      fingerprints by stable outcome **id** + count/pct/with-replacement, so it ignores
+      pure relabelings and colors — to a device a tracked stat depends on; remove fires
+      when a dependent column exists. On confirm → clear rows and drop columns whose
+      referenced vars no longer exist (`statVarsValid`).
+- [x] **Seamless rename propagation (no warning).** `propagateRenames` rewrites tracked
+      specs when an edit only renames things: a device's `varName` → updates every
+      `variable`/`variable2`/`condVar` that referenced it; an outcome **label** (matched
+      by stable id, scoped to that device's own var) → updates `target`/`condVal`. The
+      column header (`statLabel`) and future draws follow the new names while collected
+      rows stay (a count is the same number whatever the label is called). Runs on every
+      edit, so renames never warn; only real distribution changes do.
+- [x] Declined guards call `rejectEdit` (bumps a tick) to force a re-render so the
+      controlled input (n box / device fields) snaps back to its unchanged value.
+- [x] Manual clear/reset control: "✕ Clear" button next to the batch controls
+      (confirms, then `clearCollected`); "⬇ CSV" exports `collectRows`.
+- [x] **Done:** verified in `npm run dev` (instant speed, default Stacks): tracking a
+      stat seeds the just-drawn sample's value as row 1 immediately, and a second stat
+      from the same sample fills the same row; per-run appends one row per later draw;
+      "Collect 500" appends 500 (table caps shown at 200, mean count ≈ expected);
+      renaming the device var (`stk1`→`coin`) and an outcome (`a`→`heads`) update the
+      column headers with **no** warning and keep the rows, and subsequent draws compute
+      correctly under the new names; a count edit still warns; sample-size guard cancel
+      keeps rows + snaps n back, accept clears rows + keeps the column; device-edit guard
+      same; device-remove accept clears rows + drops the dependent column; no console
+      errors (incl. the now-empty pipeline); production build passes.
 
 ### Phase 4 — Sampling-distribution plot
 - [ ] Column selector → render the shared plot over that stat column.
@@ -223,7 +254,46 @@ Do the `components/` + `lib/` split now, as part of this phase.
 - [ ] Retire `StatDistPlot` once parity is reached.
 - [ ] **Done when:** Each tracked column can be plotted with EDA-grade styling.
 
-### Phase 5 — Divider tool (shared-plot feature, gated to numeric axes)
+### Phase 5 — Derived-statistic calculator (build statistics from collected columns)
+Goal: let students **assemble new statistics from the columns they have already
+collected**, rather than shipping canned formulas. A difference in means/proportions is
+a short formula; an informal ANOVA-style total-variation statistic is a longer one the
+student builds themselves (collect each group mean + the overall mean, then
+`(mean(x|g="a") − m)^2 + (mean(x|g="b") − m)^2 + …`). No pre-built between/within button.
+Depends only on Phase 4 (so a derived column inherits the distribution plot); the divider
+tool (now Phase 6) then applies to derived columns for free, in either build order.
+
+- [ ] **Derived column model.** A new tracked-column kind
+      `{ id, kind:"derived", expr, inputs:[statId…] }` whose value for each row is the
+      expression evaluated over that row's other collected-column values. Plain tracked
+      stats stay `kind:"stat"` (or absent). `computeStat` is unchanged; derived values
+      are computed by the formula evaluator against `collectRows`.
+- [ ] **Backfill for free.** Because operands are already-collected columns, a valid
+      derived column fills in for **every existing row** the instant it's defined — no
+      re-sampling. Both accumulation paths (per-run + batch) compute derived columns
+      alongside the plain ones for new rows.
+- [ ] **Expression engine (dependency-light, ~100 lines).** A hand-rolled
+      recursive-descent / shunting-yard evaluator over: column-reference tokens,
+      operators `+ − × ÷ ^` and unary minus, parentheses, and the functions
+      `sqrt` and `abs`. Pure, no library. Returns NaN if any referenced operand is
+      missing in that row.
+- [ ] **Click-to-insert UI (not typed).** Collected columns have verbose `statLabel`s
+      (`mean(x | g="a")`), so the calculator inserts column references as **chips you
+      click** (backed by a short internal alias), plus operator/function buttons and a
+      live preview of the result on the current sample. Typing raw labels is not the
+      path.
+- [ ] **Partial-sample honesty.** Where a referenced group is absent in a sample
+      (small n / without replacement), that operand is `—`/NaN, so the derived value is
+      NaN for that row. Surface this rather than silently coercing.
+- [ ] **Dependency invalidation.** A derived column depends on its operand columns;
+      removing an operand drops or disables the derived column (a column-level analog of
+      the Phase 3 `statVarsValid` variable-dependency guard).
+- [ ] **Done when:** a student can collect two means and define their difference (live,
+      backfilled), and can build the informal ANOVA-style statistic from several group
+      means + the overall mean using `^2`, `+`, and parentheses; the derived column plots
+      with the Phase 4 distribution plot; removing an operand column invalidates it.
+
+### Phase 6 — Divider tool (shared-plot feature, gated to numeric axes)
 - [ ] Add the divider as an opt-in feature of the shared `Plot`, with the
       availability gate (univariate numeric and num × cat only; hidden otherwise).
 - [ ] Single-divider overlay: draggable vertical line + numeric input; shade two
@@ -237,7 +307,7 @@ Do the `components/` + `lib/` split now, as part of this phase.
       typing a value updates the shaded regions and proportion read-outs live
       (including per-group on side-by-side distributions).
 
-### Phase 6 — Cleanup & retirement
+### Phase 7 — Cleanup & retirement
 - [ ] Remove `StatDefiner`, `FN_OPTS`-driven dropdown UI, and `DotPlot`/
       `StatDistPlot` if fully superseded (keep `computeStat`/`statLabel`).
 - [ ] Update CLAUDE.md architecture notes + "next steps".
