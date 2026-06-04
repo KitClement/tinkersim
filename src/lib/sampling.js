@@ -45,6 +45,31 @@ function drawMixer(dev, state) {
   return { label: dev.balls[ballIdx].label, ballIdx };
 }
 
+// Draw one complete sample (sampleSize rows) through the pipeline, non-animated.
+// Single source of truth for the batch/collect path: both Collect loops must call
+// this so with/without-replacement counting can never diverge from the animation
+// loop (which shares makeDrawState/drawStacks/drawMixer above).
+function drawSample(pipeline, sampleSize) {
+  const state = makeDrawState(pipeline);
+  const rows = [];
+  for (let s = 0; s < sampleSize; s++) {
+    const row = { _sample: s + 1 };
+    pipeline.forEach(dev => {
+      if (dev.type === "spinner") {
+        row[dev.varName] = sampleSpinner(dev.slices);
+      } else if (dev.type === "stacks") {
+        const drawn = drawStacks(dev, state);
+        row[dev.varName] = drawn ? drawn.label : "";
+      } else if (dev.type === "mixer") {
+        const drawn = drawMixer(dev, state);
+        row[dev.varName] = drawn ? drawn.label : "";
+      }
+    });
+    rows.push(row);
+  }
+  return rows;
+}
+
 // ─── Device factories ─────────────────────────────────────────────────────────
 const mkSpinner = n => ({
   id:uid(), type:"spinner", varName:`spin${n}`, withReplacement:true,
@@ -192,4 +217,4 @@ async function runAnimatedSample({ pipeline, sampleSize, speed, setAnimStates, o
   onDone();
 }
 
-export { sampleSpinner, makeDrawState, drawStacks, drawMixer, mkSpinner, mkStacks, mkMixer, runAnimatedSample };
+export { sampleSpinner, makeDrawState, drawStacks, drawMixer, drawSample, mkSpinner, mkStacks, mkMixer, runAnimatedSample };

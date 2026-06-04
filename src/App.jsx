@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { iSm, btnNav, btnPlus, ctrlLbl } from "./lib/styles";
 import { uid, parseCSV } from "./lib/util";
 import { computeStat, statLabel } from "./lib/stats";
-import { sampleSpinner, makeDrawState, drawStacks, drawMixer, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
+import { drawSample, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
 import { DeviceCard } from "./components/devices";
 import { CopyColumnButton } from "./components/ui";
 import { EDAPlot, SampleResults, StatDefiner, StatDistPlot, CollectTable } from "./components/plots";
@@ -29,15 +29,103 @@ export default function App() {
   // sample, keyed by stat id) that later phases will fill.
   const [trackedStats, setTrackedStats] = useState([]);
   const [collectRows, setCollectRows] = useState([]);
+  // The most recently finished manual draw: { id, rows }. Tracking a stat seeds its
+  // value for this sample immediately (its number is on the plot right now), and the
+  // per-run accumulator tags that sample's row with this id so a later track fills the
+  // same row instead of starting a new one.
+  const [currentSample, setCurrentSample] = useState(null);
+  // Bumped to force a re-render after a guard is declined, so controlled inputs
+  // (sample-size box, device fields) snap back to their unchanged state instead of
+  // showing the rejected edit.
+  const [, setGuardTick] = useState(0);
+  const rejectEdit = () => setGuardTick(t => t + 1);
 
   // Toggle tracking of a stat (clicking its number on the plot adds it, or removes
-  // it if that exact statistic — same statLabel — is already tracked).
-  const trackStat = spec => setTrackedStats(ts => {
+  // it if that exact statistic — same statLabel — is already tracked). Adding seeds
+  // the current sample's value into the table at once (its number is visible now).
+  const trackStat = spec => {
     const lbl = statLabel(spec);
-    if (ts.some(s => statLabel(s) === lbl)) return ts.filter(s => statLabel(s) !== lbl);
-    return [...ts, { id:uid(), target:"", condVar:"", condVal:"", variable2:"", ...spec }];
-  });
+    if (trackedStats.some(s => statLabel(s) === lbl)) {
+      setTrackedStats(ts => ts.filter(s => statLabel(s) !== lbl));
+      return;
+    }
+    const newStat = { id:uid(), target:"", condVar:"", condVal:"", variable2:"", ...spec };
+    setTrackedStats(ts => [...ts, newStat]);
+    if (!currentSample) return;
+    setCollectRows(rows => {
+      const idx = rows.findIndex(r => r._id === currentSample.id);
+      if (idx >= 0) {
+        const copy = rows.slice();
+        copy[idx] = { ...copy[idx], [newStat.id]: computeStat(newStat, currentSample.rows) };
+        return copy;
+      }
+      // No row for this sample yet (nothing was tracked when it was drawn) — create it
+      // now with every tracked stat (including the new one) computed on that sample.
+      const row = { _id: currentSample.id };
+      [...trackedStats, newStat].forEach(s => { row[s.id] = computeStat(s, currentSample.rows); });
+      return [...rows, row];
+    });
+  };
   const untrackStat = id => setTrackedStats(ts => ts.filter(s => s.id !== id));
+
+  // Batch accumulation ("Collect N") for the tracked-stat table
+  const [batchSize, setBatchSize] = useState(500);
+  const [batchCollecting, setBatchCollecting] = useState(false);
+  const [batchProgress, setBatchProgress] = useState(0);
+  const batchCancelRef = useRef(false);
+
+  // ── Invalidation helpers ──────────────────────────────────────────────────
+  // Which pipeline variables a tracked stat references (so a sampler change can
+  // tell whether it invalidates a column).
+  const statDependsOn = (s, varName) =>
+    s.variable === varName || s.variable2 === varName || s.condVar === varName;
+  // A tracked stat stays valid only if every variable it references still exists.
+  const statVarsValid = (s, names) =>
+    (!s.variable || names.includes(s.variable)) &&
+    (!s.variable2 || names.includes(s.variable2)) &&
+    (!s.condVar || names.includes(s.condVar));
+  // Distribution fingerprint of a device, keyed by stable outcome ids so it ignores
+  // pure relabelings (a device or outcome rename) and cosmetic color edits. Only a
+  // real change to what gets drawn — counts, probabilities, with/without replacement,
+  // or adding/removing outcomes — changes this, so only those warn-and-clear.
+  const samplingShape = d => {
+    const base = { type:d.type, withReplacement:d.withReplacement };
+    if (d.type === "stacks") base.items = d.items.map(it => ({ id:it.id, count:it.count }));
+    if (d.type === "mixer") base.balls = d.balls.map(b => b.id);
+    if (d.type === "spinner") base.slices = d.slices.map(s => ({ id:s.id, pct:s.pct }));
+    return JSON.stringify(base);
+  };
+  // Seamless rename propagation: when an edit renames the device's variable or one of
+  // its outcome labels (matched by stable id), rewrite the tracked specs to match so
+  // their columns and future draws follow the new names — no warning, results kept.
+  const propagateRenames = (stats, oldDev, newDev) => {
+    const varFrom = oldDev.varName, varTo = newDev.varName;
+    const coll = { stacks:"items", mixer:"balls", spinner:"slices" }[oldDev.type];
+    const labelMap = {};
+    if (coll) {
+      const oldById = {};
+      (oldDev[coll] || []).forEach(it => { oldById[it.id] = it.label; });
+      (newDev[coll] || []).forEach(it => {
+        if (oldById[it.id] !== undefined && oldById[it.id] !== it.label) labelMap[oldById[it.id]] = it.label;
+      });
+    }
+    const noLabelChange = Object.keys(labelMap).length === 0;
+    if (varFrom === varTo && noLabelChange) return stats; // nothing renamed
+    return stats.map(s => {
+      const ns = { ...s };
+      // Outcome renames apply only to this device's own outcomes (its variable).
+      if (ns.variable === varFrom && ns.target && labelMap[ns.target] !== undefined) ns.target = labelMap[ns.target];
+      if (ns.condVar === varFrom && ns.condVal && labelMap[ns.condVal] !== undefined) ns.condVal = labelMap[ns.condVal];
+      // Device (variable) rename anywhere it is referenced.
+      if (varFrom !== varTo) {
+        if (ns.variable === varFrom) ns.variable = varTo;
+        if (ns.variable2 === varFrom) ns.variable2 = varTo;
+        if (ns.condVar === varFrom) ns.condVar = varTo;
+      }
+      return ns;
+    });
+  };
+  const clearCollected = () => { setCollectRows([]); setBatchProgress(0); setCurrentSample(null); };
 
   const [stats, setStats] = useState([{ id:uid(), fn:"proportion", variable:"", target:"", condVar:"", condVal:"", variable2:"" }]);
   const [repetitions, setRepetitions] = useState(500);
@@ -64,24 +152,77 @@ export default function App() {
     reader.readAsText(file);
   };
 
-  const updDevice = (i, d) => setPipeline(p => { const a = [...p]; a[i] = d; return a; });
-  const remDevice = i => setPipeline(p => p.filter((_, j) => j !== i));
+  const updDevice = (i, d) => {
+    const old = pipeline[i];
+    const structural = samplingShape(old) !== samplingShape(d);
+    const dependent = trackedStats.some(s => statDependsOn(s, old.varName));
+    // Distribution-structure guard: only a change to *what gets drawn* (counts,
+    // probabilities, with/without replacement, adding/removing outcomes) invalidates
+    // collected results. Pure renames skip this entirely (structural === false).
+    if (structural && dependent && collectRows.length) {
+      if (!window.confirm("Editing this sampler deletes the statistics already collected in the table. (The tracked columns are kept.) Continue?")) { rejectEdit(); return; }
+      const newNames = pipeline.map((dev, j) => j === i ? d.varName : dev.varName);
+      setTrackedStats(ts => propagateRenames(ts, old, d).filter(s => statVarsValid(s, newNames)));
+      clearCollected();
+    } else {
+      // Seamless: propagate any device/outcome renames into tracked specs, keep results.
+      setTrackedStats(ts => propagateRenames(ts, old, d));
+    }
+    setPipeline(p => { const a = [...p]; a[i] = d; return a; });
+  };
+  const remDevice = i => {
+    const removed = pipeline[i];
+    const dependent = trackedStats.some(s => statDependsOn(s, removed.varName));
+    if (collectRows.length && dependent) {
+      if (!window.confirm("Removing this sampler deletes the statistics already collected in the table, and any tracked column that depends on it. Continue?")) { rejectEdit(); return; }
+      clearCollected();
+    }
+    const newNames = pipeline.filter((_, j) => j !== i).map(d => d.varName);
+    setTrackedStats(ts => ts.filter(s => statVarsValid(s, newNames)));
+    setPipeline(p => p.filter((_, j) => j !== i));
+  };
   const movDevice = (i, dir) => setPipeline(p => { const a = [...p], j = i + dir; if (j < 0 || j >= a.length) return a; [a[i], a[j]] = [a[j], a[i]]; return a; });
+
+  // Sample-size guard: a distribution at n=10 must not be mixed with one at n=20,
+  // so changing n clears the collected results (but keeps the tracked columns).
+  const changeSampleSize = v => {
+    const n = Math.max(1, parseInt(v) || 1);
+    if (n === sampleSize) return;
+    if (collectRows.length) {
+      if (!window.confirm("Changing the sample size clears the statistics already collected in the table. (The tracked columns are kept.) Continue?")) { rejectEdit(); return; }
+      clearCollected();
+    }
+    setSampleSize(n);
+  };
 
   const doSample = useCallback(async () => {
     if (sampling) { cancelRef.current = true; return; }
     cancelRef.current = false;
     setSampling(true);
     setSampleData([]);
+    setCurrentSample(null);
     const rows = [];
     await runAnimatedSample({
       pipeline, sampleSize, speed:animSpeed,
       setAnimStates,
       onRow: row => { rows.push(row); setSampleData([...rows]); },
-      onDone: () => setSampling(false),
+      onDone: () => {
+        setSampling(false);
+        if (cancelRef.current) return; // cancelled run is partial — don't record it
+        // Mark this finished sample as current so tracking a stat later seeds its row.
+        const sample = { id: uid(), rows };
+        setCurrentSample(sample);
+        // Per-run accumulation (always on): append one row of every tracked stat
+        // computed on the finished sample, tagged with this sample's id.
+        if (trackedStats.length) {
+          const statRow = { _id: sample.id };
+          trackedStats.forEach(s => { statRow[s.id] = computeStat(s, rows); });
+          setCollectRows(cr => [...cr, statRow]);
+        }
+      },
       cancelRef,
     });
-  }, [pipeline, sampleSize, animSpeed, sampling]);
+  }, [pipeline, sampleSize, animSpeed, sampling, trackedStats]);
 
   const addStat = () => setStats(s => [...s, { id:uid(), fn:"mean", variable:varNames[0] || "", target:"", condVar:"", condVal:"", variable2:"" }]);
   const updStat = (i, s) => setStats(ss => { const a = [...ss]; a[i] = s; return a; });
@@ -99,30 +240,41 @@ export default function App() {
     const step = () => {
       let n = 0;
       while (n < CHUNK && rep < repetitions && !collectCancelRef.current) {
-        // Per-repetition state: live counts for stacks, drawn-index sets for mixer
-        const drawState = makeDrawState(pipeline);
-        const rows = [];
-        for (let s = 0; s < sampleSize; s++) {
-          const row = { _sample:s + 1 };
-          pipeline.forEach(dev => {
-            if (dev.type === "spinner") {
-              row[dev.varName] = sampleSpinner(dev.slices);
-            } else if (dev.type === "stacks") {
-              const drawn = drawStacks(dev, drawState);
-              row[dev.varName] = drawn ? drawn.label : "";
-            } else if (dev.type === "mixer") {
-              const drawn = drawMixer(dev, drawState);
-              row[dev.varName] = drawn ? drawn.label : "";
-            }
-          });
-          rows.push(row);
-        }
+        const rows = drawSample(pipeline, sampleSize);
         validStats.forEach(s => { accum[s.id].push(computeStat(s, rows)); });
         rep++; n++;
       }
       setCollectProgress(Math.round(rep / repetitions * 100));
       if (rep < repetitions && !collectCancelRef.current) requestAnimationFrame(step);
       else { setDistributions({ ...accum }); setCollecting(false); }
+    };
+    requestAnimationFrame(step);
+  };
+
+  // Batch accumulation for the tracked-stat table: draw `batchSize` samples and
+  // append one row per sample (each tracked stat computed on that sample). Same
+  // shared draw path as doSample/doCollect, so counting can't diverge.
+  const doCollectTracked = () => {
+    if (batchCollecting) { batchCancelRef.current = true; return; }
+    if (!trackedStats.length) return;
+    batchCancelRef.current = false;
+    setBatchCollecting(true); setBatchProgress(0);
+    const specs = trackedStats;
+    const newRows = [];
+    let rep = 0;
+    const CHUNK = 200;
+    const step = () => {
+      let n = 0;
+      while (n < CHUNK && rep < batchSize && !batchCancelRef.current) {
+        const rows = drawSample(pipeline, sampleSize);
+        const statRow = { _id: uid() };
+        specs.forEach(s => { statRow[s.id] = computeStat(s, rows); });
+        newRows.push(statRow);
+        rep++; n++;
+      }
+      setBatchProgress(Math.round(rep / batchSize * 100));
+      if (rep < batchSize && !batchCancelRef.current) requestAnimationFrame(step);
+      else { setCollectRows(cr => [...cr, ...newRows]); setBatchCollecting(false); }
     };
     requestAnimationFrame(step);
   };
@@ -155,7 +307,7 @@ export default function App() {
           </div>
           <label style={ctrlLbl}>n =
             <input type="number" value={sampleSize} min={1} max={10000}
-              onChange={e => setSampleSize(Math.max(1, parseInt(e.target.value) || 1))}
+              onChange={e => changeSampleSize(e.target.value)}
               style={{ ...iSm, width:60, marginLeft:4 }} />
           </label>
           <button onClick={doSample} style={{ padding:"8px 18px", background:sampling ? "#ef4444" : "#6366f1", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:"pointer", minWidth:120 }}>
@@ -246,6 +398,37 @@ export default function App() {
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
           <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>📈 Collect Statistics</span>
           <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+            <label style={ctrlLbl}>Collect
+              <input type="number" value={batchSize} min={1} max={100000}
+                onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
+                style={{ ...iSm, width:70, marginLeft:4 }} />
+              samples
+            </label>
+            <button onClick={doCollectTracked} disabled={!trackedStats.length}
+              style={{ padding:"7px 16px", background:batchCollecting ? "#ef4444" : "#10b981", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:trackedStats.length ? "pointer" : "not-allowed", opacity:trackedStats.length ? 1 : 0.5, minWidth:120 }}>
+              {batchCollecting ? "⏹ " + batchProgress + "%" : "▶ Collect " + batchSize}
+            </button>
+            {collectRows.length > 0 && !batchCollecting && (
+              <>
+                <button onClick={() => { if (window.confirm("Clear all " + collectRows.length + " collected rows? (Tracked columns are kept.)")) clearCollected(); }} style={{ ...btnNav, fontSize:12 }}>✕ Clear</button>
+                <button onClick={() => {
+                  const rows = collectRows.map((r, i) => { const o = { _rep:i + 1 }; trackedStats.forEach(s => { o[statLabel(s)] = r[s.id] !== undefined ? r[s.id] : ""; }); return o; });
+                  exportCSV(rows, "collected-statistics.csv");
+                }} style={{ ...btnNav, fontSize:12 }}>⬇ CSV</button>
+              </>
+            )}
+          </div>
+        </div>
+        {/* Tracked-statistic columns (authored from the Sample Results plot) */}
+        <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start", marginBottom:14 }}>
+          <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} />
+        </div>
+
+        <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", borderTop:"1px solid #f0f0f0", paddingTop:10, marginBottom:8 }}>
+          <span style={{ fontSize:11, fontWeight:700, color:"#bbb", letterSpacing:1, textTransform:"uppercase" }}>
+            Or define statistics manually
+          </span>
+          <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <label style={ctrlLbl}>Repetitions:
               <input type="number" value={repetitions} min={1} max={10000}
                 onChange={e => setRepetitions(Math.max(1, parseInt(e.target.value) || 1))}
@@ -263,14 +446,6 @@ export default function App() {
               }} style={{ ...btnNav, fontSize:12 }}>⬇ CSV</button>
             )}
           </div>
-        </div>
-        {/* Tracked-statistic columns (authored from the Sample Results plot) */}
-        <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start", marginBottom:14 }}>
-          <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} />
-        </div>
-
-        <div style={{ fontSize:11, fontWeight:700, color:"#bbb", letterSpacing:1, textTransform:"uppercase", borderTop:"1px solid #f0f0f0", paddingTop:10, marginBottom:8 }}>
-          Or define statistics manually
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:12 }}>
           {stats.map((s, i) => (

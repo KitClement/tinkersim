@@ -567,7 +567,7 @@ function CollectTable({ trackedStats, collectRows, onRemove }) {
                 </td>
               </tr>
             ) : shown.map((row, i) => (
-              <tr key={offset + i} style={{ borderBottom:"1px solid #f5f5f5" }}>
+              <tr key={row._id || offset + i} style={{ borderBottom:"1px solid #f5f5f5" }}>
                 <td style={{ color:"#ccc", padding:"3px 6px", textAlign:"right" }}>{offset + i + 1}</td>
                 {trackedStats.map(s => (
                   <td key={s.id} style={{ padding:"3px 8px", color:"#555", whiteSpace:"nowrap" }}>{fmt(row[s.id])}</td>
