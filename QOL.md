@@ -164,7 +164,7 @@ identity key. Walking the pipeline end to end:
   builder as an additive tool. Confirm the color-map logic still assigns one color
   per distinct label.
 
-### B2. Speed slider should take effect live during a run  ·  P2
+### B2. Speed slider should take effect live during a run  ·  P2  ·  ✅ DONE
 - **Symptom.** Animation speed is locked for the whole sample. With a large `n`
   you often want to watch a few draws, then jump to fast/instant — currently you
   must stop and restart.
@@ -179,8 +179,12 @@ identity key. Walking the pipeline end to end:
   per-device visuals will follow. Verify the spinner's in-flight animation handles
   a mid-run speed change gracefully (it keys off the state it was given when the
   spin started — likely fine, but exercise it).
+- **Done.** `runAnimatedSample` now takes a `speedRef` (not a fixed `speed`); `App`
+  mirrors `animSpeed` into `speedRef` via an effect, and the draw loop recomputes
+  `delay`/`spinMs` from `speedRef.current` at the top of each draw. `set()` stamps the
+  live speed so device visuals follow.
 
-### B3. Relocate sampler controls into the sampler tool's upper-right  ·  P2
+### B3. Relocate sampler controls into the sampler tool's upper-right  ·  P2  ·  ✅ DONE
 - **Symptom.** Since the EDA toolbar landed, the global header still owns the
   speed slider, `n =`, "▶ Draw Sample", and "⬇ CSV". They read as app-level chrome
   and feel disconnected from the Sampler Pipeline they actually drive.
@@ -191,6 +195,9 @@ identity key. Walking the pipeline end to end:
   `+ Stacks / + Mixer / + Spinner` buttons. Keep the same widgets/handlers; this is
   a layout move, not a logic change. Watch wrap behavior at narrow widths — the
   add-device buttons and the controls may need to wrap onto two lines.
+- **Done.** The speed slider / `n =` / Draw Sample / CSV cluster now lives in the
+  Sampler Pipeline card header (right-aligned via `marginLeft:"auto"`, `flexWrap`);
+  the top bar is just the title. Handlers unchanged.
 
 ---
 
@@ -259,7 +266,7 @@ identity key. Walking the pipeline end to end:
 2. ~~**A3 + A2 together** — the id-keyed rows refactor (A3) plus its user-facing
    duplicate-name guard (A2), in one branch with a short dedicated plan.~~ ✅ DONE
    (devices now identified by stable `id`; `varName` is display-only via `nameOf`.)
-3. **B2**, **B3** — sampler interaction polish.
+3. ~~**B2**, **B3** — sampler interaction polish.~~ ✅ DONE
 4. **C1** — wording sweep (mechanical, low risk if labels-only).
 5. **D1**, **D2** — feature work; size each with its own short plan before starting.
 

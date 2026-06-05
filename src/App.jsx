@@ -20,6 +20,10 @@ export default function App() {
   const [sampling, setSampling] = useState(false);
   const [animStates, setAnimStates] = useState({});
   const cancelRef = useRef(false);
+  // Mirror animSpeed into a ref so an in-progress run reads the live value and a
+  // mid-run slider change takes effect on the next draw (B2).
+  const speedRef = useRef(animSpeed);
+  useEffect(() => { speedRef.current = animSpeed; }, [animSpeed]);
 
   // Tracked-statistic data model (Phase 2): columns authored by selecting overlays
   // in Sample Results; `collectRows` is the accumulator (one row per collected
@@ -349,7 +353,7 @@ export default function App() {
     setCurrentSample(null);
     const rows = [];
     await runAnimatedSample({
-      pipeline, sampleSize, speed:animSpeed,
+      pipeline, sampleSize, speedRef,
       setAnimStates,
       onRow: row => { rows.push(row); setSampleData([...rows]); },
       onDone: () => {
@@ -367,7 +371,7 @@ export default function App() {
       },
       cancelRef,
     });
-  }, [pipeline, sampleSize, animSpeed, sampling, trackedStats, hasNameError]);
+  }, [pipeline, sampleSize, sampling, trackedStats, hasNameError]);
 
   // Batch accumulation for the tracked-stat table: draw `batchSize` samples and
   // append one row per sample (each tracked stat computed on that sample). Same
@@ -413,38 +417,6 @@ export default function App() {
         <div>
           <h1 style={{ margin:0, fontSize:20, fontWeight:800, color:"#1a1a2e" }}>🎲 TinkerSim</h1>
           <p style={{ margin:0, fontSize:11, color:"#999" }}>Probability sampler & simulation</p>
-        </div>
-        <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
-          <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
-            <span style={{ fontSize:10, color:"#888" }}>{SPEED_LABELS[animSpeed]}</span>
-            <input type="range" min={0} max={2} step={1} value={animSpeed} onChange={e => setAnimSpeed(+e.target.value)} style={{ width:80, accentColor:"#6366f1" }} />
-            <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"#bbb", width:80 }}>
-              <span>slow</span><span>fast</span><span>instant</span>
-            </div>
-          </div>
-          <label style={ctrlLbl}>n =
-            <input type="number" value={sampleSize} min={1} max={10000}
-              onChange={e => changeSampleSize(e.target.value)}
-              style={{ ...iSm, width:60, marginLeft:4 }} />
-          </label>
-          <button onClick={doSample} disabled={hasNameError && !sampling}
-            title={hasNameError && !sampling ? "Rename — device names must be unique and non-blank" : undefined}
-            style={{ padding:"8px 18px", background:sampling ? "#ef4444" : (hasNameError ? "#c7c9d1" : "#6366f1"), color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:(hasNameError && !sampling) ? "not-allowed" : "pointer", minWidth:120 }}>
-            {sampling ? "⏹ Stop" : "▶ Draw Sample"}
-          </button>
-          {hasNameError && !sampling && (
-            <span style={{ fontSize:11, color:"#ef4444", fontWeight:600, maxWidth:160, lineHeight:1.2 }}>
-              Rename — device names must be unique and non-blank
-            </span>
-          )}
-          {sampleData.length > 0 && !sampling && (
-            <button onClick={() => {
-              // Draw rows are keyed by device id; resolve each to its display name so the
-              // exported CSV header stays human-readable.
-              const rows = sampleData.map(r => { const o = { _sample: r._sample }; varIds.forEach(id => { o[nameOf(id)] = r[id]; }); return o; });
-              exportCSV(rows, "sample.csv");
-            }} style={{ ...btnNav, fontSize:12 }}>⬇ CSV</button>
-          )}
         </div>
       </div>
 
@@ -500,6 +472,40 @@ export default function App() {
               style={{ padding:"4px 10px", background:"#f7f8fa", border:"1.5px dashed #ddd", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"#bbb":"#555", opacity:sampling?0.5:1 }}>+ {l}</button>
           ))}
           {sampling && <span style={{ fontSize:12, color:"#6366f1", fontWeight:600 }}>drawing {sampleData.length}/{sampleSize}…</span>}
+          {/* Sampler run controls — these drive the pipeline below, so they live in
+              its header rather than the app-level top bar (B3). */}
+          <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+            <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
+              <span style={{ fontSize:10, color:"#888" }}>{SPEED_LABELS[animSpeed]}</span>
+              <input type="range" min={0} max={2} step={1} value={animSpeed} onChange={e => setAnimSpeed(+e.target.value)} style={{ width:80, accentColor:"#6366f1" }} />
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"#bbb", width:80 }}>
+                <span>slow</span><span>fast</span><span>instant</span>
+              </div>
+            </div>
+            <label style={ctrlLbl}>n =
+              <input type="number" value={sampleSize} min={1} max={10000}
+                onChange={e => changeSampleSize(e.target.value)}
+                style={{ ...iSm, width:60, marginLeft:4 }} />
+            </label>
+            <button onClick={doSample} disabled={hasNameError && !sampling}
+              title={hasNameError && !sampling ? "Rename — device names must be unique and non-blank" : undefined}
+              style={{ padding:"8px 18px", background:sampling ? "#ef4444" : (hasNameError ? "#c7c9d1" : "#6366f1"), color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:(hasNameError && !sampling) ? "not-allowed" : "pointer", minWidth:120 }}>
+              {sampling ? "⏹ Stop" : "▶ Draw Sample"}
+            </button>
+            {hasNameError && !sampling && (
+              <span style={{ fontSize:11, color:"#ef4444", fontWeight:600, maxWidth:160, lineHeight:1.2 }}>
+                Rename — device names must be unique and non-blank
+              </span>
+            )}
+            {sampleData.length > 0 && !sampling && (
+              <button onClick={() => {
+                // Draw rows are keyed by device id; resolve each to its display name so the
+                // exported CSV header stays human-readable.
+                const rows = sampleData.map(r => { const o = { _sample: r._sample }; varIds.forEach(id => { o[nameOf(id)] = r[id]; }); return o; });
+                exportCSV(rows, "sample.csv");
+              }} style={{ ...btnNav, fontSize:12 }}>⬇ CSV</button>
+            )}
+          </div>
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"flex-start" }}>
           {pipeline.map((dev, i) => (

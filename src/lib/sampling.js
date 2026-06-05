@@ -123,16 +123,18 @@ const mkMixer = n => ({
   ]
 });
 
-async function runAnimatedSample({ pipeline, sampleSize, speed, setAnimStates, onRow, onDone, cancelRef }) {
-  // speed: 0=slow, 1=fast, 2=instant
-  const delay = speed === 0 ? 1800 : speed === 1 ? 500 : 0;
+async function runAnimatedSample({ pipeline, sampleSize, speedRef, setAnimStates, onRow, onDone, cancelRef }) {
+  // speed (0=slow, 1=fast, 2=instant) is read live from speedRef.current so a
+  // mid-run slider change takes effect on the next draw. delay/spinMs are
+  // recomputed at the top of each draw iteration; `set` stamps the current speed
+  // so device visuals follow too.
 
   // Per-device without-replacement tracking (same shape as collect loop)
   const drawState = makeDrawState(pipeline);
   const liveCounts = drawState.liveCounts;
   const drawnSets = drawState.drawnBalls;
 
-  const set = (devId, patch) => setAnimStates(prev => ({ ...prev, [devId]: { ...prev[devId], ...patch, speed } }));
+  const set = (devId, patch) => setAnimStates(prev => ({ ...prev, [devId]: { ...prev[devId], ...patch, speed: speedRef.current } }));
   const clearAll = () => setAnimStates(prev => {
     const next = { ...prev };
     Object.keys(next).forEach(k => { next[k] = { ...next[k], result:null, bouncing:false, surfaceIdx:null, highlightIdx:null, animating:false }; });
@@ -141,6 +143,9 @@ async function runAnimatedSample({ pipeline, sampleSize, speed, setAnimStates, o
 
   for (let s = 0; s < sampleSize; s++) {
     if (cancelRef.current) break;
+    // Recompute timing per draw so a live speed change is picked up next draw.
+    const speed = speedRef.current;
+    const delay = speed === 0 ? 1800 : speed === 1 ? 500 : 0;
     const row = { _sample: s + 1 };
 
     for (const dev of pipeline) {
