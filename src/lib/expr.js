@@ -151,16 +151,17 @@ function renderExpr(tokens, labelOf) {
 // The formula label for a column: plain stats use statLabel; a derived column renders
 // its expression with each referenced column resolved (recursively). This ignores any
 // custom name, so it can serve as the always-available tooltip / fallback.
-function exprLabel(s, byId) {
-  if (!s || s.kind !== "derived") return statLabel(s);
-  return renderExpr(s.tokens, id => { const o = byId[id]; return o ? colLabel(o, byId) : "?"; });
+function exprLabel(s, byId, nameOf) {
+  if (!s || s.kind !== "derived") return statLabel(s, nameOf);
+  return renderExpr(s.tokens, id => { const o = byId[id]; return o ? colLabel(o, byId, nameOf) : "?"; });
 }
 
 // Display label for any tracked column: a derived column's custom `name` if the user
-// gave one, otherwise its formula. Plain stats always use statLabel.
-function colLabel(s, byId) {
+// gave one, otherwise its formula. Plain stats always use statLabel. `nameOf` resolves
+// device ids to display names (threaded down to statLabel).
+function colLabel(s, byId, nameOf) {
   if (s && s.kind === "derived" && s.name && s.name.trim()) return s.name.trim();
-  return exprLabel(s, byId);
+  return exprLabel(s, byId, nameOf);
 }
 
 // Compute one accumulator row for a sample: every plain stat via computeStat, then

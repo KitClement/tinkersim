@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
 import { COLORS, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR } from "../lib/util";
-import { numericSummary, lsFit, statLabel, computeStat, FN_OPTS } from "../lib/stats";
+import { numericSummary, lsFit, statLabel, statKey, computeStat, FN_OPTS } from "../lib/stats";
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
@@ -16,12 +16,12 @@ import { Sel, ChkLabel } from "./ui";
 // plots render pixel-identically there.
 
 // SVG value label that toggles tracking of `spec` on click.
-function TrackText({ x, y, anchor = "middle", color, fontSize = 9, label, spec, trackable, trackedLabels, onTrackStat }) {
+function TrackText({ x, y, anchor = "middle", color, fontSize = 9, label, spec, trackable, trackedKeys, onTrackStat }) {
   if (!trackable || !spec) {
     return <text x={x} y={y} textAnchor={anchor} fontSize={fontSize} fill={color} fontWeight={700}>{label}</text>;
   }
   const lbl = statLabel(spec);
-  const tracked = trackedLabels && trackedLabels.has(lbl);
+  const tracked = trackedKeys && trackedKeys.has(statKey(spec));
   const w = String(label).length * fontSize * 0.62 + 8, h = fontSize + 5;
   const rx = anchor === "start" ? x - 4 : anchor === "end" ? x - w + 4 : x - w / 2;
   return (
@@ -37,11 +37,11 @@ function TrackText({ x, y, anchor = "middle", color, fontSize = 9, label, spec, 
 // HTML count/percent number (cat plots) that toggles tracking of `spec` on click — or,
 // when the ruler's cat-difference mode is active (`measureSelect` supplied), picks the
 // number as operand A or B for a difference instead of tracking it.
-function CatNum({ text, spec, dim, trackable, trackedLabels, onTrackStat, measureSelect, measureRole }) {
+function CatNum({ text, spec, dim, trackable, trackedKeys, onTrackStat, measureSelect, measureRole }) {
   if (measureSelect && spec) {
     const sel = !!measureRole;
     return (
-      <span data-mkey={statLabel(spec)} onClick={e => { e.stopPropagation(); measureSelect(spec); }}
+      <span data-mkey={statKey(spec)} onClick={e => { e.stopPropagation(); measureSelect(spec); }}
         title={sel ? "Selected as " + measureRole + " — click to deselect" : "Click to pick as A or B for the ruler difference"}
         style={{ cursor:"pointer", padding:"0 3px", borderRadius:4, fontWeight:700,
           background: sel ? "#ccfbf1" : "transparent",
@@ -53,7 +53,7 @@ function CatNum({ text, spec, dim, trackable, trackedLabels, onTrackStat, measur
   }
   if (!trackable || !spec) return <span style={{ color: dim ? "#bbb" : "#3730a3" }}>{text}</span>;
   const lbl = statLabel(spec);
-  const tracked = trackedLabels && trackedLabels.has(lbl);
+  const tracked = trackedKeys && trackedKeys.has(statKey(spec));
   return (
     <span onClick={e => { e.stopPropagation(); onTrackStat(spec); }}
       title={tracked ? "Tracking " + lbl + " — click to remove" : "Click to track " + lbl}
@@ -237,7 +237,7 @@ function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, 
   const anchorOf = p => {
     if (!snapCandidates) return null;
     let c;
-    if (p.spec) { const lbl = statLabel(p.spec); c = snapCandidates.find(k => k.spec && statLabel(k.spec) === lbl); }
+    if (p.spec) { const key = statKey(p.spec); c = snapCandidates.find(k => k.spec && statKey(k.spec) === key); }
     else c = snapCandidates.find(k => !k.spec && k.y != null && Math.abs(k.value - p.value) < 1e-9);
     return (c && c.y != null) ? { x: sx(c.value), y: c.y } : null;
   };
@@ -400,7 +400,7 @@ function MeasureConnector({ containerRef, aKey, bKey, diff, fmt, trackable, onTr
 //   1) cat × cat grid   2) num × cat split dot plots
 //   3) single categorical bins   4) scatter / univariate numeric (SVG)
 // ══════════════════════════════════════════════════════════════════════════════
-function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedLabels, varKinds }) {
+function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds }) {
   const [dotSize, setDotSize] = useState(5);
 
   // Stat overlay toggles
@@ -534,7 +534,7 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
   // a number to click), which makes the separate "Show values" toggle redundant.
   const trackable = !!onTrackStat;
   const showVals = showValues || trackable;
-  const trackProps = { trackable, trackedLabels, onTrackStat };
+  const trackProps = { trackable, trackedKeys, onTrackStat };
 
   // ── Divider tool (Phase 6) ──
   // Gated to plots with a continuous numeric X axis: univariate numeric, or num × cat
@@ -675,15 +675,15 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
 
   // Mechanic 3 (cat difference): up to two clicked stat specs; their live difference.
   const measureSelect = spec => setCatSel(prev => {
-    const lbl = statLabel(spec);
-    const idx = prev.findIndex(s => statLabel(s) === lbl);
+    const key = statKey(spec);
+    const idx = prev.findIndex(s => statKey(s) === key);
     if (idx >= 0) return prev.filter((_, i) => i !== idx); // deselect
     const next = [...prev, spec];
     return next.length > 2 ? next.slice(next.length - 2) : next; // keep the last two
   });
   const measureRoleOf = spec => {
     if (!showCatRuler) return null;
-    const i = catSel.findIndex(s => statLabel(s) === statLabel(spec));
+    const i = catSel.findIndex(s => statKey(s) === statKey(spec));
     return i === 0 ? "A" : i === 1 ? "B" : null;
   };
   const catVals = catSel.map(s => computeStat(s, rows));
@@ -695,8 +695,8 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
   const measure = showCatRuler ? {
     select: measureSelect,
     roleOf: measureRoleOf,
-    aKey: catSel[0] ? statLabel(catSel[0]) : null,
-    bKey: catSel[1] ? statLabel(catSel[1]) : null,
+    aKey: catSel[0] ? statKey(catSel[0]) : null,
+    bKey: catSel[1] ? statKey(catSel[1]) : null,
     diff: catDiff,
     fmt: fmtNum,
     trackable: !!(trackable && onTrackDiff),
@@ -1155,7 +1155,7 @@ function SampleResults({ sampleData, varNames, varKinds, onTrackStat, onTrackDif
   const [xVar, setXVar] = useState(varNames[0] || "");
   const [yVar, setYVar] = useState("none");
   const scrollRef = useRef(null);
-  const trackedLabels = useMemo(() => new Set((trackedStats || []).map(statLabel)), [trackedStats]);
+  const trackedKeys = useMemo(() => new Set((trackedStats || []).map(statKey)), [trackedStats]);
 
   // Auto-scroll the table to the bottom as new draws arrive
   useEffect(() => {
@@ -1204,7 +1204,7 @@ function SampleResults({ sampleData, varNames, varKinds, onTrackStat, onTrackDif
       </div>
       {/* RIGHT: shared interactive plot */}
       <Plot rows={sampleData} headers={varNames} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
-        varKinds={varKinds} onTrackStat={onTrackStat} onTrackDiff={onTrackDiff} trackedLabels={trackedLabels} />
+        varKinds={varKinds} onTrackStat={onTrackStat} onTrackDiff={onTrackDiff} trackedKeys={trackedKeys} />
     </div>
   );
 }
@@ -1313,7 +1313,7 @@ function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabe
 // UNI-CAT PLOT — single categorical variable as binned stacked-dot columns
 // (a 1-D version of CatCatGrid). Collapses to top 10 + "Other" past 10 categories.
 // ══════════════════════════════════════════════════════════════════════════════
-function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat, measure }) {
+function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure }) {
   const measureSelect = measure && measure.select, measureRoleOf = measure && measure.roleOf;
   const wrapRef = useRef(null);
   const counts = {};
@@ -1355,8 +1355,8 @@ function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false,
               display:"flex", flexDirection:"column", alignItems:"center", padding:"0 6px", boxSizing:"border-box" }}>
               {hasLabel && (
                 <div style={{ fontSize:12, fontWeight:600, minHeight:16, display:"flex", gap:4 }}>
-                  {showCount && <CatNum text={cnt} dim={cnt === 0} spec={countSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
-                  {showPct && <CatNum text={`(${pct}%)`} dim={cnt === 0} spec={propSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
+                  {showCount && <CatNum text={cnt} dim={cnt === 0} spec={countSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
+                  {showPct && <CatNum text={`(${pct}%)`} dim={cnt === 0} spec={propSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
                 </div>
               )}
               {/* bottom-anchored dot grid: fills a row left→right, then stacks
@@ -1392,7 +1392,7 @@ function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false,
 // reference layout where the colored number = P(row | column).
 // ══════════════════════════════════════════════════════════════════════════════
 
-function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat, measure }) {
+function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure }) {
   const measureSelect = measure && measure.select, measureRoleOf = measure && measure.roleOf;
   const wrapRef = useRef(null);
   // Per-axis counts drive collapsing of high-cardinality axes (>10 categories)
@@ -1472,8 +1472,8 @@ function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = fa
                   display:"flex", flexDirection:"column" }}>
                   {hasLabel && (
                     <div style={{ fontSize:12, fontWeight:600, display:"flex", gap:4, flexWrap:"wrap" }}>
-                      {showCount && <CatNum text={c} dim={c === 0} spec={countSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
-                      {showPct && <CatNum text={`(${pct}%)`} dim={c === 0} spec={propSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
+                      {showCount && <CatNum text={c} dim={c === 0} spec={countSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
+                      {showPct && <CatNum text={`(${pct}%)`} dim={c === 0} spec={propSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
                     </div>
                   )}
                   {/* Stacked dots */}
@@ -1517,11 +1517,11 @@ function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = fa
 // variable, for comparing distributions across groups. Optional box/mean/SD per group.
 // ══════════════════════════════════════════════════════════════════════════════
 
-function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff }) {
+function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff }) {
   // Per-group tracking spec: a numeric stat conditioned on this group (null for the
   // "Other" bucket or when the plot isn't trackable).
   const grpSpec = (cat, fn) => (trackable && cat !== OTHER_CAT) ? { fn, variable:numVar, condVar:catVar, condVal:String(cat) } : null;
-  const tp = { trackable, trackedLabels, onTrackStat };
+  const tp = { trackable, trackedKeys, onTrackStat };
   // Collapse high-cardinality grouping variable into top 10 + "Other"
   const catCount = {};
   rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) catCount[v] = (catCount[v] || 0) + 1; });

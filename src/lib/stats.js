@@ -97,11 +97,31 @@ function regionDesc(s, v) {
   return r(s.lo) + " " + (s.loOpen ? "<" : "≤") + " " + v + " " + (s.hiOpen ? "<" : "≤") + " " + r(s.hi);
 }
 
-function statLabel(s) {
-  const c = s.condVar ? " | " + s.condVar + "=\"" + s.condVal + "\"" : "", v = s.variable || "?";
+// Stable IDENTITY key for a stat spec, serialized over its structural fields (which
+// hold device ids once the pipeline is id-keyed). Used for all dedup / toggle /
+// membership / data-mkey comparisons so identity never rides on the display label —
+// which changes on a rename and would collide when two devices momentarily share a
+// name. `statLabel` stays purely for display.
+function statKey(s) {
+  if (!s) return "";
+  if (s.kind === "derived") return "derived:" + s.id;
+  return JSON.stringify([
+    s.fn, s.variable || "", s.variable2 || "", s.condVar || "",
+    s.condVal == null ? "" : s.condVal, s.target == null ? "" : s.target,
+    s.lo == null ? null : s.lo, s.hi == null ? null : s.hi, !!s.loOpen, !!s.hiOpen,
+  ]);
+}
+
+// Display label for a stat spec. `nameOf(id)` resolves a device id to its display
+// varName; it defaults to identity so callers without a pipeline map (and the EDA
+// plot, which passes real header strings) render unchanged.
+function statLabel(s, nameOf) {
+  const nm = nameOf || (v => v);
+  const c = s.condVar ? " | " + nm(s.condVar) + "=\"" + s.condVal + "\"" : "", v = s.variable ? nm(s.variable) : "?";
   if (s.fn === "countBetween" || s.fn === "propBetween")
     return (s.fn === "countBetween" ? "count(" : "prop(") + regionDesc(s, v) + c + ")";
-  const mp = { count:"count(" + v + c + ")", countVal:"count(" + v + "=\"" + s.target + "\"" + c + ")", proportion:"prop(" + v + "=\"" + s.target + "\"" + c + ")", mean:"mean(" + v + c + ")", sd:"SD(" + v + c + ")", median:"median(" + v + c + ")", min:"min(" + v + c + ")", max:"max(" + v + c + ")", q1:"Q1(" + v + c + ")", q3:"Q3(" + v + c + ")", slope:"slope(" + v + "~" + (s.variable2 || "?") + c + ")", intercept:"intercept(" + v + "~" + (s.variable2 || "?") + c + ")" };
+  const v2 = s.variable2 ? nm(s.variable2) : "?";
+  const mp = { count:"count(" + v + c + ")", countVal:"count(" + v + "=\"" + s.target + "\"" + c + ")", proportion:"prop(" + v + "=\"" + s.target + "\"" + c + ")", mean:"mean(" + v + c + ")", sd:"SD(" + v + c + ")", median:"median(" + v + c + ")", min:"min(" + v + c + ")", max:"max(" + v + c + ")", q1:"Q1(" + v + c + ")", q3:"Q3(" + v + c + ")", slope:"slope(" + v + "~" + v2 + c + ")", intercept:"intercept(" + v + "~" + v2 + c + ")" };
   return mp[s.fn] || s.fn;
 }
 
@@ -112,4 +132,4 @@ const FN_OPTS = [{ v:"mean", l:"Mean" }, { v:"sd", l:"SD" }, { v:"median", l:"Me
 // value and work on any kind, so they are excluded.
 const NUMERIC_FNS = new Set(["mean", "sd", "median", "min", "max", "q1", "q3", "slope", "intercept", "countBetween", "propBetween"]);
 
-export { quantile, numericSummary, lsFit, computeStat, statLabel, FN_OPTS, NUMERIC_FNS };
+export { quantile, numericSummary, lsFit, computeStat, statLabel, statKey, FN_OPTS, NUMERIC_FNS };

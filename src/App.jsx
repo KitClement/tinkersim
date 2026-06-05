@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { iSm, btnNav, ctrlLbl } from "./lib/styles";
 import { uid, parseCSV } from "./lib/util";
-import { computeStat, statLabel, NUMERIC_FNS } from "./lib/stats";
+import { computeStat, statLabel, statKey, NUMERIC_FNS } from "./lib/stats";
 import { colLabel, exprLabel, computeStatRow, evalExpr } from "./lib/expr";
 import { drawSample, deviceVarKind, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
 import { DeviceCard } from "./components/devices";
@@ -44,7 +44,7 @@ export default function App() {
   // value for it immediately (its number is on the plot now). Dedupes by statLabel.
   // Shared by click-to-track and the manual stat builder.
   const addTrackedStat = spec => {
-    if (trackedStats.some(s => statLabel(s) === statLabel(spec))) return;
+    if (trackedStats.some(s => statKey(s) === statKey(spec))) return;
     const newStat = { id:uid(), target:"", condVar:"", condVal:"", variable2:"", ...spec };
     setTrackedStats(ts => [...ts, newStat]);
     if (!currentSample) return;
@@ -64,11 +64,11 @@ export default function App() {
   // Click-to-track: clicking a number on the plot adds it, or removes it if that exact
   // statistic (same statLabel) is already tracked.
   const trackStat = spec => {
-    const lbl = statLabel(spec);
-    if (trackedStats.some(s => statLabel(s) === lbl)) untrackStatByLabel(lbl);
+    const key = statKey(spec);
+    if (trackedStats.some(s => statKey(s) === key)) untrackStatByKey(key);
     else addTrackedStat(spec);
   };
-  const untrackStatByLabel = lbl => setTrackedStats(ts => dropDependents(ts, ts.filter(s => statLabel(s) === lbl).map(s => s.id)));
+  const untrackStatByKey = key => setTrackedStats(ts => dropDependents(ts, ts.filter(s => statKey(s) === key).map(s => s.id)));
   // Remove a column (by id) and cascade to any derived column that references it —
   // a derived statistic is meaningless once one of its operands is gone (Phase 5).
   const untrackStat = id => setTrackedStats(ts => dropDependents(ts, [id]));
@@ -93,8 +93,8 @@ export default function App() {
     const newPlain = []; // operand columns created by this call
     const tokenFor = op => {
       if (!op.spec) return { k:"num", v: parseFloat(Number(op.value).toFixed(4)) };
-      const lbl = statLabel(op.spec);
-      let col = stats.find(s => s.kind !== "derived" && statLabel(s) === lbl);
+      const key = statKey(op.spec);
+      let col = stats.find(s => s.kind !== "derived" && statKey(s) === key);
       if (!col) {
         col = { id:uid(), target:"", condVar:"", condVal:"", variable2:"", ...op.spec };
         stats.push(col); newPlain.push(col);
