@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
-import { iSm, btnX, btnNav, ctrlLbl } from "../lib/styles";
+import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
 import { COLORS, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR } from "../lib/util";
 import { numericSummary, lsFit, statLabel, FN_OPTS } from "../lib/stats";
+import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
 import { Sel, ChkLabel } from "./ui";
@@ -359,6 +360,112 @@ function StatDefiner({ stat, varNames, sampleData, onChange, onRemove }) {
   );
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// DERIVED-STATISTIC CALCULATOR (Phase 5) — assemble a new column from the statistics
+// already collected. The expression is TYPED into a text field using short column
+// aliases (A, B, …) plus operators / numbers / parens / sqrt / abs; column chips
+// insert their alias at the cursor as a shortcut. A live preview evaluates on the
+// current sample, and the value backfills every existing row when the column is added.
+//   columns: [{ id, label, value }]   (value = stat computed on the current sample)
+//   onAdd(tokens, inputIds)
+// ══════════════════════════════════════════════════════════════════════════════
+function DerivedBuilder({ columns, onAdd }) {
+  const [text, setText] = useState("");
+  const [name, setName] = useState("");
+  const inputRef = useRef(null);
+  // Position-based aliases (A, B, …) ↔ stat ids, for both the chip legend and lexing.
+  const aliasOf = useMemo(() => {
+    const m = {}; columns.forEach((c, i) => { m[c.id] = aliasFor(i); }); return m;
+  }, [columns.map(c => c.id).join(",")]);
+  const aliasToId = useMemo(() => {
+    const m = {}; columns.forEach((c, i) => { m[aliasFor(i)] = c.id; }); return m;
+  }, [columns.map(c => c.id).join(",")]);
+  const valById = useMemo(() => {
+    const m = {}; columns.forEach(c => { m[c.id] = c.value; }); return m;
+  }, [columns]);
+
+  const { tokens, ok: lexOk } = lexExpr(text, aliasToId);
+  const structOk = validateExpr(tokens);
+  const valid = text.trim().length > 0 && lexOk && structOk;
+  const preview = valid ? evalExpr(tokens, id => valById[id]) : NaN;
+  const fmt = v => (typeof v === "number" && isFinite(v) ? parseFloat(v.toFixed(4)) : "—");
+
+  // Insert a snippet at the caret (falls back to append) and keep focus after it.
+  const insertAtCaret = snippet => {
+    const el = inputRef.current;
+    const start = el && el.selectionStart != null ? el.selectionStart : text.length;
+    const end = el && el.selectionEnd != null ? el.selectionEnd : text.length;
+    const next = text.slice(0, start) + snippet + text.slice(end);
+    setText(next);
+    requestAnimationFrame(() => { if (el) { el.focus(); const p = start + snippet.length; el.setSelectionRange(p, p); } });
+  };
+
+  const add = () => {
+    if (!valid) return;
+    const inputIds = [...new Set(tokens.filter(t => t.k === "col").map(t => t.id))];
+    onAdd(tokens, inputIds, name.trim());
+    setText(""); setName("");
+  };
+
+  if (!columns.length) {
+    return <div style={{ fontSize:12, color:"#bbb", padding:"6px 0" }}>
+      Track at least one statistic above first — then combine collected columns here (e.g. a difference of two means).
+    </div>;
+  }
+  const msg = !text.trim() ? null : !lexOk ? "unrecognised symbol — use the column letters, numbers, + − × ÷ ^ ( ) sqrt abs" : !structOk ? "incomplete" : null;
+  return (
+    <div>
+      {/* Column chips — click to insert the alias at the caret; legend shows full label */}
+      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}>
+        {columns.map(c => (
+          <button key={c.id} onClick={() => insertAtCaret(aliasOf[c.id])} title={"Insert " + aliasOf[c.id] + " = " + c.label + " (" + fmt(c.value) + " on this sample)"}
+            style={{ ...btnPlus, color:"#4338ca", borderColor:"#a5b4fc", background:"#eef2ff", display:"inline-flex", gap:5, alignItems:"center" }}>
+            <strong>{aliasOf[c.id]}</strong>
+            <span style={{ fontFamily:"monospace", fontSize:10, color:"#6366f1", maxWidth:160, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{c.label}</span>
+          </button>
+        ))}
+        <span style={{ width:1, height:18, background:"#e5e7eb", margin:"2px 1px" }} />
+        {/* Math palette — typing works too; these are discoverability shortcuts that
+            insert at the caret. Binary operators carry surrounding spaces for legibility
+            (the lexer ignores whitespace). */}
+        {[[" + ", "+"], [" − ", "−"], [" × ", "×"], [" ÷ ", "÷"], ["^", "^"], ["(", "("], [")", ")"]].map(([snip, lbl]) => (
+          <button key={lbl} onClick={() => insertAtCaret(snip)} style={{ ...btnPlus, fontFamily:"monospace", minWidth:26, color:"#475569" }}>{lbl}</button>
+        ))}
+        <button onClick={() => insertAtCaret("sqrt(")} style={{ ...btnPlus, fontFamily:"monospace", color:"#475569" }}>sqrt(</button>
+        <button onClick={() => insertAtCaret("abs(")} style={{ ...btnPlus, fontFamily:"monospace", color:"#475569" }}>abs(</button>
+      </div>
+      {/* Typed expression + live preview */}
+      <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+        <span style={{ fontSize:13, color:"#94a3b8", fontWeight:700 }}>=</span>
+        <input ref={inputRef} value={text} onChange={e => setText(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") add(); }}
+          placeholder="e.g. (A − B)  or  (A − M)^2 + (B − M)^2"
+          style={{ ...iSm, flex:"1 1 260px", minWidth:220, fontFamily:"monospace", fontSize:13, padding:"7px 10px",
+            border: msg ? "1px solid #fca5a5" : "1px solid #ddd" }} />
+        {valid && (
+          <span style={{ fontSize:11, color:"#64748b" }}>
+            on this sample → <strong style={{ color: isFinite(preview) ? "#10b981" : "#b45309", fontFamily:"monospace" }}>{fmt(preview)}</strong>
+          </span>
+        )}
+      </div>
+      {msg && <div style={{ fontSize:11, color:"#ef4444", marginTop:4 }}>{msg}</div>}
+      <div style={{ marginTop:8, display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+        <label style={{ ...ctrlLbl, fontSize:11 }}>Name
+          <input value={name} onChange={e => setName(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") add(); }}
+            placeholder="optional — defaults to the formula"
+            style={{ ...iSm, width:220, marginLeft:5 }} />
+        </label>
+        <button onClick={add} disabled={!valid}
+          style={{ padding:"7px 16px", background:"#6366f1", color:"#fff", border:"none", borderRadius:8, fontWeight:700, fontSize:13, cursor:valid ? "pointer" : "not-allowed", opacity:valid ? 1 : 0.5 }}>
+          ＋ Add derived column
+        </button>
+        <span style={{ fontSize:11, color:"#bbb" }}>Backfills every collected row instantly — no re-sampling.</span>
+      </div>
+    </div>
+  );
+}
+
 // \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
 // DISTRIBUTION PLOT \u2014 sampling-distribution view over collected-statistic columns.
 // Each column is one tracked (or manually-defined) statistic's accumulated values;
@@ -531,7 +638,7 @@ function DataTable({ rows, headers, xVar, yVar }) {
 // across runs; columns are the `trackedStats` specs (named by statLabel), each with
 // a remove control. (Accumulation itself is wired in a later phase.)
 // ══════════════════════════════════════════════════════════════════════════════
-function CollectTable({ trackedStats, collectRows, onRemove }) {
+function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabel, titleFor }) {
   if (!trackedStats.length) {
     return (
       <div style={{ flex:"1 1 280px", minWidth:220, color:"#bbb", fontSize:13, padding:"16px 8px", lineHeight:1.5 }}>
@@ -555,8 +662,9 @@ function CollectTable({ trackedStats, collectRows, onRemove }) {
             <tr>
               <th style={{ position:"sticky", top:0, background:"#f8f9fa", color:"#bbb", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid #e5e7eb" }}>#</th>
               {trackedStats.map(s => (
-                <th key={s.id} style={{ position:"sticky", top:0, background:"#f1f5f9", color:"#334155", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>
-                  <span style={{ fontFamily:"monospace", color:"#4338ca" }}>{statLabel(s)}</span>
+                <th key={s.id} title={titleFor ? titleFor(s) : undefined} style={{ position:"sticky", top:0, background: s.kind === "derived" ? "#fef3c7" : "#f1f5f9", color:"#334155", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>
+                  {s.kind === "derived" && <span title="Derived column" style={{ marginRight:3 }}>ƒ</span>}
+                  <span style={{ fontFamily:"monospace", color: s.kind === "derived" ? "#b45309" : "#4338ca" }}>{labelFor(s)}</span>
                   <button onClick={() => onRemove(s.id)} title="Remove column" style={{ ...btnX, fontSize:13, marginLeft:4, verticalAlign:"middle" }}>×</button>
                 </th>
               ))}
@@ -1010,4 +1118,4 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
 }
 
 
-export { Plot, SampleResults, StatDefiner, DistributionPlot, EDAPlot, DataTable, CollectTable, UniCatPlot, CatCatGrid, SplitDotPlots };
+export { Plot, SampleResults, StatDefiner, DerivedBuilder, DistributionPlot, EDAPlot, DataTable, CollectTable, UniCatPlot, CatCatGrid, SplitDotPlots };

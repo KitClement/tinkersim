@@ -2,10 +2,11 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { iSm, btnNav, ctrlLbl } from "./lib/styles";
 import { uid, parseCSV } from "./lib/util";
 import { computeStat, statLabel } from "./lib/stats";
+import { colLabel, exprLabel, computeStatRow, evalExpr } from "./lib/expr";
 import { drawSample, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
 import { DeviceCard } from "./components/devices";
 import { CopyColumnButton } from "./components/ui";
-import { EDAPlot, SampleResults, StatDefiner, DistributionPlot, CollectTable } from "./components/plots";
+import { EDAPlot, SampleResults, StatDefiner, DerivedBuilder, DistributionPlot, CollectTable } from "./components/plots";
 
 export default function App() {
   // CSV / EDA dataset
@@ -60,8 +61,7 @@ export default function App() {
       }
       // No row for this sample yet (nothing was tracked when it was drawn) — create it
       // now with every tracked stat (including the new one) computed on that sample.
-      const row = { _id: currentSample.id };
-      [...trackedStats, newStat].forEach(s => { row[s.id] = computeStat(s, currentSample.rows); });
+      const row = { _id: currentSample.id, ...computeStatRow([...trackedStats, newStat], currentSample.rows, computeStat) };
       return [...rows, row];
     });
   };
@@ -69,10 +69,23 @@ export default function App() {
   // statistic (same statLabel) is already tracked.
   const trackStat = spec => {
     const lbl = statLabel(spec);
-    if (trackedStats.some(s => statLabel(s) === lbl)) setTrackedStats(ts => ts.filter(s => statLabel(s) !== lbl));
+    if (trackedStats.some(s => statLabel(s) === lbl)) untrackStatByLabel(lbl);
     else addTrackedStat(spec);
   };
-  const untrackStat = id => setTrackedStats(ts => ts.filter(s => s.id !== id));
+  const untrackStatByLabel = lbl => setTrackedStats(ts => dropDependents(ts, ts.filter(s => statLabel(s) === lbl).map(s => s.id)));
+  // Remove a column (by id) and cascade to any derived column that references it —
+  // a derived statistic is meaningless once one of its operands is gone (Phase 5).
+  const untrackStat = id => setTrackedStats(ts => dropDependents(ts, [id]));
+
+  // Add a derived column { kind:"derived", tokens, inputs } and backfill its value
+  // into every already-collected row at once (operands are existing columns, so no
+  // re-sampling is needed). Both accumulation paths compute it for new rows too.
+  const addDerivedStat = (tokens, inputs, name) => {
+    const newStat = { id:uid(), kind:"derived", tokens, inputs };
+    if (name) newStat.name = name;
+    setTrackedStats(ts => [...ts, newStat]);
+    setCollectRows(rows => rows.map(r => ({ ...r, [newStat.id]: evalExpr(tokens, sid => r[sid]) })));
+  };
 
   // Batch accumulation ("Collect N") for the tracked-stat table
   const [batchSize, setBatchSize] = useState(500);
@@ -86,10 +99,32 @@ export default function App() {
   const statDependsOn = (s, varName) =>
     s.variable === varName || s.variable2 === varName || s.condVar === varName;
   // A tracked stat stays valid only if every variable it references still exists.
+  // Derived columns reference statistic columns (not pipeline variables) so they are
+  // governed by `dropDependents`/`dropInvalid` instead.
   const statVarsValid = (s, names) =>
-    (!s.variable || names.includes(s.variable)) &&
-    (!s.variable2 || names.includes(s.variable2)) &&
-    (!s.condVar || names.includes(s.condVar));
+    s.kind === "derived" ||
+    ((!s.variable || names.includes(s.variable)) &&
+     (!s.variable2 || names.includes(s.variable2)) &&
+     (!s.condVar || names.includes(s.condVar)));
+  // Remove the given stat ids and cascade to any derived column whose operands
+  // (`inputs`) reference a removed id — settling chains of derived-on-derived.
+  const dropDependents = (stats, removeIds) => {
+    const gone = new Set(removeIds);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      stats.forEach(s => {
+        if (s.kind === "derived" && !gone.has(s.id) && s.inputs.some(i => gone.has(i))) { gone.add(s.id); changed = true; }
+      });
+    }
+    return stats.filter(s => !gone.has(s.id));
+  };
+  // Drop stat columns whose pipeline variables vanished, then cascade-drop any derived
+  // column orphaned by that removal (Phase 5 analog of the variable-dependency guard).
+  const dropInvalid = (stats, names) => {
+    const invalid = stats.filter(s => !statVarsValid(s, names)).map(s => s.id);
+    return dropDependents(stats, invalid);
+  };
   // Distribution fingerprint of a device, keyed by stable outcome ids so it ignores
   // pure relabelings (a device or outcome rename) and cosmetic color edits. Only a
   // real change to what gets drawn — counts, probabilities, with/without replacement,
@@ -136,10 +171,23 @@ export default function App() {
   // Manual statistic builder (advanced, hidden by default): authors one stat spec
   // and adds it as a column to the same tracked-stat table — not a separate workflow.
   const [manualOpen, setManualOpen] = useState(false);
+  const [derivedOpen, setDerivedOpen] = useState(false);
   const [manualStat, setManualStat] = useState({ fn:"mean", variable:"", target:"", condVar:"", condVal:"", variable2:"" });
   const addManualStat = () => { if (manualStat.variable) addTrackedStat(manualStat); };
 
   const varNames = pipeline.map(d => d.varName);
+  // Label any tracked column (plain stat → statLabel; derived → its expression
+  // rendered with operands resolved). Built fresh each render so renames flow through.
+  const statsById = Object.fromEntries(trackedStats.map(s => [s.id, s]));
+  const labelFor = s => colLabel(s, statsById);
+  // The underlying formula, used as the header tooltip so a custom name never hides
+  // what the column actually computes.
+  const exprFor = s => exprLabel(s, statsById);
+  // Plain-stat columns available as operands in the derived calculator, each with its
+  // value on the current sample for the live preview.
+  const operandCols = trackedStats
+    .filter(s => s.kind !== "derived")
+    .map(s => ({ id:s.id, label:statLabel(s), value: currentSample ? computeStat(s, currentSample.rows) : NaN }));
 
   const addDevice = type => {
     devCounts.current[type] = (devCounts.current[type] || 0) + 1;
@@ -166,7 +214,7 @@ export default function App() {
     if (structural && dependent && collectRows.length) {
       if (!window.confirm("Editing this sampler deletes the statistics already collected in the table. (The tracked columns are kept.) Continue?")) { rejectEdit(); return; }
       const newNames = pipeline.map((dev, j) => j === i ? d.varName : dev.varName);
-      setTrackedStats(ts => propagateRenames(ts, old, d).filter(s => statVarsValid(s, newNames)));
+      setTrackedStats(ts => dropInvalid(propagateRenames(ts, old, d), newNames));
       clearCollected();
     } else {
       // Seamless: propagate any device/outcome renames into tracked specs, keep results.
@@ -182,7 +230,7 @@ export default function App() {
       clearCollected();
     }
     const newNames = pipeline.filter((_, j) => j !== i).map(d => d.varName);
-    setTrackedStats(ts => ts.filter(s => statVarsValid(s, newNames)));
+    setTrackedStats(ts => dropInvalid(ts, newNames));
     setPipeline(p => p.filter((_, j) => j !== i));
   };
   const movDevice = (i, dir) => setPipeline(p => { const a = [...p], j = i + dir; if (j < 0 || j >= a.length) return a; [a[i], a[j]] = [a[j], a[i]]; return a; });
@@ -219,8 +267,7 @@ export default function App() {
         // Per-run accumulation (always on): append one row of every tracked stat
         // computed on the finished sample, tagged with this sample's id.
         if (trackedStats.length) {
-          const statRow = { _id: sample.id };
-          trackedStats.forEach(s => { statRow[s.id] = computeStat(s, rows); });
+          const statRow = { _id: sample.id, ...computeStatRow(trackedStats, rows, computeStat) };
           setCollectRows(cr => [...cr, statRow]);
         }
       },
@@ -244,8 +291,7 @@ export default function App() {
       let n = 0;
       while (n < CHUNK && rep < batchSize && !batchCancelRef.current) {
         const rows = drawSample(pipeline, sampleSize);
-        const statRow = { _id: uid() };
-        specs.forEach(s => { statRow[s.id] = computeStat(s, rows); });
+        const statRow = { _id: uid(), ...computeStatRow(specs, rows, computeStat) };
         newRows.push(statRow);
         rep++; n++;
       }
@@ -389,7 +435,7 @@ export default function App() {
               <>
                 <button onClick={() => { if (window.confirm("Clear all " + collectRows.length + " collected rows? (Tracked columns are kept.)")) clearCollected(); }} style={{ ...btnNav, fontSize:12 }}>✕ Clear</button>
                 <button onClick={() => {
-                  const rows = collectRows.map((r, i) => { const o = { _rep:i + 1 }; trackedStats.forEach(s => { o[statLabel(s)] = r[s.id] !== undefined ? r[s.id] : ""; }); return o; });
+                  const rows = collectRows.map((r, i) => { const o = { _rep:i + 1 }; trackedStats.forEach(s => { o[labelFor(s)] = r[s.id] !== undefined ? r[s.id] : ""; }); return o; });
                   exportCSV(rows, "collected-statistics.csv");
                 }} style={{ ...btnNav, fontSize:12 }}>⬇ CSV</button>
               </>
@@ -399,8 +445,28 @@ export default function App() {
         {/* Stacked top-to-bottom: the tracked-statistic table, then the manual
             builder (a table-authoring tool), then the sampling-distribution plot. */}
         <div style={{ marginBottom:14 }}>
-          <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} />
+          <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} labelFor={labelFor} titleFor={exprFor} />
         </div>
+
+        {/* Derived-statistic calculator — combine collected columns into a new column
+            (e.g. a difference of two means, or an ANOVA-style total variation). */}
+        {operandCols.length > 0 && (
+          <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:10, marginBottom:14 }}>
+            <button onClick={() => setDerivedOpen(o => !o)}
+              style={{ background:"none", border:"none", cursor:"pointer", fontSize:11, fontWeight:700, color:"#bbb", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
+              <span style={{ transform: derivedOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
+              ƒ Build a derived statistic
+            </button>
+            {derivedOpen && (
+              <div style={{ marginTop:8 }}>
+                <div style={{ fontSize:11, color:"#aaa", marginBottom:8 }}>
+                  Combine the statistics you've collected — click a column chip, then operators — to make a new column (e.g. <code>A − B</code> for a difference of means). It fills in for every collected row at once.
+                </div>
+                <DerivedBuilder columns={operandCols} onAdd={addDerivedStat} />
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Manual statistic builder — advanced, hidden behind a toggle. Adds a column
             to the same tracked-stat table above instead of a separate workflow. */}
@@ -432,7 +498,7 @@ export default function App() {
         {/* Sampling-distribution plot for a chosen tracked column. */}
         {trackedStats.length > 0 && collectRows.length > 0 && (
           <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:12 }}>
-            <DistributionPlot columns={trackedStats.map(s => ({ label: statLabel(s), values: collectRows.map(r => r[s.id]) }))} />
+            <DistributionPlot columns={trackedStats.map(s => ({ label: labelFor(s), values: collectRows.map(r => r[s.id]) }))} />
           </div>
         )}
       </div>

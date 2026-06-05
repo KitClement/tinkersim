@@ -270,7 +270,7 @@ Do the `components/` + `lib/` split now, as part of this phase.
       `DistributionPlot` (`prop(stk1="a")`, 500 dots); production build passes, no console
       errors.
 
-### Phase 5 — Derived-statistic calculator (build statistics from collected columns)
+### Phase 5 — Derived-statistic calculator (build statistics from collected columns) ✅
 Goal: let students **assemble new statistics from the columns they have already
 collected**, rather than shipping canned formulas. A difference in means/proportions is
 a short formula; an informal ANOVA-style total-variation statistic is a longer one the
@@ -278,50 +278,106 @@ student builds themselves (collect each group mean + the overall mean, then
 `(mean(x|g="a") − m)^2 + (mean(x|g="b") − m)^2 + …`). No pre-built between/within button.
 Depends only on Phase 4 (so a derived column inherits the distribution plot); the divider
 tool (now Phase 6) then applies to derived columns for free, in either build order.
+**Phase 6 depends on this phase:** the ruler tool's trackable difference-in-means is a
+derived column authored by this model, so Phase 5 lands first.
 
-- [ ] **Derived column model.** A new tracked-column kind
-      `{ id, kind:"derived", expr, inputs:[statId…] }` whose value for each row is the
-      expression evaluated over that row's other collected-column values. Plain tracked
-      stats stay `kind:"stat"` (or absent). `computeStat` is unchanged; derived values
-      are computed by the formula evaluator against `collectRows`.
-- [ ] **Backfill for free.** Because operands are already-collected columns, a valid
-      derived column fills in for **every existing row** the instant it's defined — no
-      re-sampling. Both accumulation paths (per-run + batch) compute derived columns
-      alongside the plain ones for new rows.
-- [ ] **Expression engine (dependency-light, ~100 lines).** A hand-rolled
-      recursive-descent / shunting-yard evaluator over: column-reference tokens,
-      operators `+ − × ÷ ^` and unary minus, parentheses, and the functions
-      `sqrt` and `abs`. Pure, no library. Returns NaN if any referenced operand is
-      missing in that row.
-- [ ] **Click-to-insert UI (not typed).** Collected columns have verbose `statLabel`s
-      (`mean(x | g="a")`), so the calculator inserts column references as **chips you
-      click** (backed by a short internal alias), plus operator/function buttons and a
-      live preview of the result on the current sample. Typing raw labels is not the
-      path.
-- [ ] **Partial-sample honesty.** Where a referenced group is absent in a sample
-      (small n / without replacement), that operand is `—`/NaN, so the derived value is
-      NaN for that row. Surface this rather than silently coercing.
-- [ ] **Dependency invalidation.** A derived column depends on its operand columns;
-      removing an operand drops or disables the derived column (a column-level analog of
-      the Phase 3 `statVarsValid` variable-dependency guard).
-- [ ] **Done when:** a student can collect two means and define their difference (live,
-      backfilled), and can build the informal ANOVA-style statistic from several group
-      means + the overall mean using `^2`, `+`, and parentheses; the derived column plots
-      with the Phase 4 distribution plot; removing an operand column invalidates it.
+- [x] **Derived column model.** A new tracked-column kind
+      `{ id, kind:"derived", tokens, inputs:[statId…] }` lives in the same `trackedStats`
+      array (so it is a column in `CollectTable` + `DistributionPlot` for free). Plain
+      tracked stats stay `kind:"stat"` (or absent). `computeStat` is unchanged; derived
+      values come from the new `evalExpr` token evaluator. (Used a *token array* rather
+      than an `expr` string — the click-to-insert UI builds tokens directly, so there is
+      no lexing/ambiguity against verbose labels.)
+- [x] **Backfill for free.** `addDerivedStat` maps `evalExpr` over every existing
+      `collectRows` row the instant the column is defined — no re-sampling. Both
+      accumulation paths compute derived columns alongside plain ones via the shared
+      `computeStatRow` (two-pass: plain stats, then derived over those values).
+- [x] **Expression engine (dependency-light, ~120 lines).** `lib/expr.js` — a hand-rolled
+      recursive-descent evaluator over a token array: column refs, operators `+ − × ÷ ^`
+      (right-assoc `^`) and unary minus, parentheses, and `sqrt`/`abs`. Pure, no library.
+      A missing operand propagates NaN. `validateExpr` gates the Add button on structural
+      validity (balanced, no missing operands, no trailing tokens).
+- [x] **Typed expression field with alias chips (revised from chips-only).** The
+      authoring surface is an editable text input the student types into freely
+      (`(A − M)^2 + (B − M)^2`), using short uppercase **aliases** for columns; `lexExpr`
+      tokenises it (normalising unicode `− × ÷`, case-insensitive aliases, `sqrt`/`abs`).
+      Column chips now **insert their alias at the caret** as a shortcut, with the full
+      `statLabel` shown beside each. Live preview + a parse-error message gate the Add
+      button. *Why the change:* only column references are hard to type (verbose labels
+      with parens/quotes); aliases make them a single safe token, so operators and
+      especially numeric constants are far easier typed than clicked.
+- [x] **Optional column name (added on request).** The builder has an optional **Name**
+      field; a derived spec carries `name?` and `colLabel` shows it when set, otherwise the
+      formula (`exprLabel`). The name flows to the table header, distribution-plot column
+      selector, and CSV export; the table header keeps the full formula as a `title`
+      tooltip so a short name never hides what the column computes. Tokens/ids still drive
+      everything else, so evaluation/backfill/invalidation are unchanged.
+- [x] **Partial-sample honesty.** `evalExpr` returns NaN when any referenced operand is
+      missing/blank in a row; `CollectTable` renders NaN as `—` (and the distribution
+      plot skips it) rather than coercing to 0.
+- [x] **Dependency invalidation.** `dropDependents` cascade-removes any derived column
+      whose `inputs` reference a removed stat id; wired into `untrackStat` (manual remove)
+      and `dropInvalid` (the Phase 3 sampler-change/remove guards) so a derived column dies
+      with its operands.
+- [x] **Done:** verified in `npm run dev` (instant speed, default Stacks). Engine +
+      lexer unit-tested against the live bundled module (difference, nested ANOVA
+      `(A−M)^2+(B−M)^2`, right-assoc `^`, unary minus, `sqrt`/`abs`, precedence, NaN
+      propagation, validation/lex-error gates, unicode operators, case-insensitive
+      aliases, `aliasFor` rollover A→Z→AA, `colLabel`, `computeStatRow`). E2E: tracked two
+      counts → **typed** `(A + B) / 2` (live preview 5) and `(A − B)^2` → derived column
+      labelled with full expressions and backfilled (rows `(4−6)²=4`, `(7−3)²=16`,
+      including per-run accumulation on a later draw); chips insert aliases at the caret;
+      invalid input shows "incomplete"/"unrecognised symbol" and disables Add; the derived
+      column is selectable in the distribution plot; removing operand `count(stk1="a")`
+      cascade-dropped the derived column; no fresh console errors; production build passes.
 
-### Phase 6 — Divider tool (shared-plot feature, gated to numeric axes)
-- [ ] Add the divider as an opt-in feature of the shared `Plot`, with the
-      availability gate (univariate numeric and num × cat only; hidden otherwise).
+### Phase 6 — Plot measurement tools (divider + ruler)
+Two **independent user-facing tools** built on **one shared measurement-overlay
+foundation** in the shared `Plot`. Stays **after Phase 5**: a trackable ruler
+*difference* (`mean(A) − mean(B)`) is representable only as a Phase 5 **derived column**
+(`computeStat` returns a single scalar and cannot express a difference), so the ruler's
+"＋ track" affordance reuses the Phase 5 model + evaluator rather than a second mechanism.
+The ruler's residual case also fills the num × num gap the divider deliberately defers.
+
+**6a — Shared measurement-overlay foundation (build once).**
+- [ ] Draggable handle primitive (pointer events, clamp to axis domain) on the shared
+      `Plot`. Reuse the value→pixel scale (`sx` / `xS.scale`) and `makeScale`'s
+      `scale`/`fmt` for handle↔value mapping.
+- [ ] Snap helper: snap a handle to the nearest of — constants (free), data dots
+      (`dots[]`), and visible measures (`xSummary.mean/median/q1/q3/sd`, per-group means
+      in `SplitDotPlots`, the `lsFit` line for residuals). No stats-engine changes.
+- [ ] Numeric input bound to each handle (typed value ⇄ handle position stay in sync).
+- [ ] Read-out box component.
+- [ ] Availability gate: numeric axis present ⇒ tool offered (univariate numeric,
+      num × cat side-by-side); hidden on cat × cat grid and uni-cat. num × num is allowed
+      for the **ruler** (residual) even though the divider stays off there.
+
+**6b — Divider tool** (opt-in, gated to numeric axes).
 - [ ] Single-divider overlay: draggable vertical line + numeric input; shade two
       regions; display P(< v) / P(≥ v).
 - [ ] Range mode toggle: second handle; display P(< lo) / P(lo–hi) / P(> hi).
-- [ ] Pointer-event drag with snap-to-value and clamping to the axis domain; keep
-      input and handle in sync.
-- [ ] num × cat case: one shared divider across groups → per-group + overall
-      proportion read-outs.
-- [ ] **Done when:** the tool appears only on numeric-axis plots, and dragging or
-      typing a value updates the shaded regions and proportion read-outs live
-      (including per-group on side-by-side distributions).
+- [ ] num × cat case: one shared divider across groups → per-group + overall proportion
+      read-outs. Read-off only (not tracked in this phase).
+
+**6c — Ruler tool** (opt-in, three mechanics).
+- [ ] **Axis distance** — univariate numeric & num × cat groups: two endpoints, each
+      snappable to a constant / dot / measure; read-out shows the signed distance.
+      Difference-in-group-means is the headline num × cat case (endpoints snap to each
+      group mean).
+- [ ] **Residual to LS line** — num × num scatter: one endpoint snaps to a data point,
+      the other to its vertical foot on the `ls` line; read-out shows `y − ŷ`.
+- [ ] **Difference of two measures** — cat × cat percentages (and any two clicked scalar
+      measures): not an axis measurement; select two computed numbers (reuse the `CatNum`
+      cell-number targets) and show their difference.
+- [ ] **Trackable read-out (ruler only).** A "＋ track" affordance reuses
+      `onTrackStat`/`addTrackedStat`: it auto-creates the two operand stat specs (if not
+      already tracked) plus a Phase 5 derived column `expr = A − B` (or `A − constant`),
+      which backfills existing rows and plots via `DistributionPlot`. The residual case
+      is visual-only at first (the measured point has no stable cross-repetition
+      identity) — defer its trackability.
+- [ ] **Done when:** both tools appear only on gated plots and operate independently; the
+      ruler measures all three cases live (drag + typed value stay in sync); a tracked
+      difference-in-means backfills as a derived column and plots on the distribution plot.
 
 ### Phase 7 — Cleanup & retirement
 - [x] **Consolidated to one workflow (done early, post-Phase 4).** Removed the separate
@@ -335,7 +391,8 @@ tool (now Phase 6) then applies to derived columns for free, in either build ord
       `trackStat` so both entry points share it. `StatDistPlot` already retired in Phase 4.
 - [ ] Optionally retire `StatDefiner` + `FN_OPTS` dropdowns entirely if the
       click-to-track path fully covers authoring (keep `computeStat`/`statLabel`).
-- [ ] Update CLAUDE.md architecture notes + "next steps".
+- [ ] Update CLAUDE.md architecture notes + "next steps" (incl. documenting the divider
+      and ruler as the two plot measurement tools in the plot section).
 - [ ] Final pass: verify every device (Stacks w/ & w/o replacement, Mixer, Spinner)
       feeds both accumulation paths correctly.
 
