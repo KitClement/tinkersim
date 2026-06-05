@@ -132,21 +132,22 @@ export default function App() {
   const batchCancelRef = useRef(false);
 
   // ── Invalidation helpers ──────────────────────────────────────────────────
-  // Which pipeline variables a tracked stat references (so a sampler change can
+  // Which pipeline devices a tracked stat references — by stable device id, the same
+  // key a spec's variable/variable2/condVar fields now hold (so a sampler change can
   // tell whether it invalidates a column).
-  const statDependsOn = (s, varName) =>
-    s.variable === varName || s.variable2 === varName || s.condVar === varName;
-  // A tracked stat stays valid only if every variable it references still exists.
-  // Derived columns reference statistic columns (not pipeline variables) so they are
-  // governed by `dropDependents`/`dropInvalid` instead.
-  const statVarsValid = (s, names) =>
+  const statDependsOn = (s, devId) =>
+    s.variable === devId || s.variable2 === devId || s.condVar === devId;
+  // A tracked stat stays valid only if every device it references still exists.
+  // `ids` is the set of live device ids. Derived columns reference statistic columns
+  // (not pipeline devices) so they are governed by `dropDependents`/`dropInvalid`.
+  const statVarsValid = (s, ids) =>
     s.kind === "derived" ||
-    ((!s.variable || names.includes(s.variable)) &&
-     (!s.variable2 || names.includes(s.variable2)) &&
-     (!s.condVar || names.includes(s.condVar)));
-  // A numeric-only stat (mean/SD/…) is invalidated when a variable it averages over is
+    ((!s.variable || ids.includes(s.variable)) &&
+     (!s.variable2 || ids.includes(s.variable2)) &&
+     (!s.condVar || ids.includes(s.condVar)));
+  // A numeric-only stat (mean/SD/…) is invalidated when a device it averages over is
   // no longer numeric — e.g. relabeling or adding an outcome turns the device's variable
-  // categorical. `kinds` is varName → {numeric,time} for the post-edit pipeline. Derived
+  // categorical. `kinds` is deviceId → {numeric,time} for the post-edit pipeline. Derived
   // columns and value-tallying stats (count/countVal/proportion) are kind-agnostic.
   const statKindInvalid = (s, kinds) => {
     if (s.kind === "derived" || !NUMERIC_FNS.has(s.fn)) return false;
@@ -165,10 +166,10 @@ export default function App() {
     }
     return stats.filter(s => !gone.has(s.id));
   };
-  // Drop stat columns whose pipeline variables vanished, then cascade-drop any derived
+  // Drop stat columns whose pipeline devices vanished, then cascade-drop any derived
   // column orphaned by that removal (Phase 5 analog of the variable-dependency guard).
-  const dropInvalid = (stats, names) => {
-    const invalid = stats.filter(s => !statVarsValid(s, names)).map(s => s.id);
+  const dropInvalid = (stats, ids) => {
+    const invalid = stats.filter(s => !statVarsValid(s, ids)).map(s => s.id);
     return dropDependents(stats, invalid);
   };
   // Distribution fingerprint of a device, keyed by stable outcome ids so it ignores
@@ -182,11 +183,12 @@ export default function App() {
     if (d.type === "spinner") base.slices = d.slices.map(s => ({ id:s.id, pct:s.pct }));
     return JSON.stringify(base);
   };
-  // Seamless rename propagation: when an edit renames the device's variable or one of
-  // its outcome labels (matched by stable id), rewrite the tracked specs to match so
-  // their columns and future draws follow the new names — no warning, results kept.
+  // Seamless OUTCOME-relabel propagation: when an edit renames one of a device's outcome
+  // labels (matched by stable outcome id), rewrite any tracked spec whose target/condVal
+  // stored that label so its column and future draws follow the new label — no warning,
+  // results kept. A device (variable) rename needs NO handling here: specs reference the
+  // device's stable id, which never changes, and display names resolve through nameOf.
   const propagateRenames = (stats, oldDev, newDev) => {
-    const varFrom = oldDev.varName, varTo = newDev.varName;
     const coll = { stacks:"items", mixer:"balls", spinner:"slices" }[oldDev.type];
     const labelMap = {};
     if (coll) {
@@ -196,19 +198,13 @@ export default function App() {
         if (oldById[it.id] !== undefined && oldById[it.id] !== it.label) labelMap[oldById[it.id]] = it.label;
       });
     }
-    const noLabelChange = Object.keys(labelMap).length === 0;
-    if (varFrom === varTo && noLabelChange) return stats; // nothing renamed
+    if (Object.keys(labelMap).length === 0) return stats; // no outcome relabeled
+    const devId = oldDev.id; // === newDev.id (an edit never changes the id)
     return stats.map(s => {
       const ns = { ...s };
-      // Outcome renames apply only to this device's own outcomes (its variable).
-      if (ns.variable === varFrom && ns.target && labelMap[ns.target] !== undefined) ns.target = labelMap[ns.target];
-      if (ns.condVar === varFrom && ns.condVal && labelMap[ns.condVal] !== undefined) ns.condVal = labelMap[ns.condVal];
-      // Device (variable) rename anywhere it is referenced.
-      if (varFrom !== varTo) {
-        if (ns.variable === varFrom) ns.variable = varTo;
-        if (ns.variable2 === varFrom) ns.variable2 = varTo;
-        if (ns.condVar === varFrom) ns.condVar = varTo;
-      }
+      // Outcome relabels apply only to specs over THIS device (its variable / condVar).
+      if (ns.variable === devId && ns.target && labelMap[ns.target] !== undefined) ns.target = labelMap[ns.target];
+      if (ns.condVar === devId && ns.condVal && labelMap[ns.condVal] !== undefined) ns.condVal = labelMap[ns.condVal];
       return ns;
     });
   };
@@ -221,26 +217,32 @@ export default function App() {
   const [manualStat, setManualStat] = useState({ fn:"mean", variable:"", target:"", condVar:"", condVal:"", variable2:"" });
   const addManualStat = () => { if (manualStat.variable) addTrackedStat(manualStat); };
 
-  const varNames = pipeline.map(d => d.varName);
+  // Devices (and drawn rows / stat specs) are identified by stable id; varName is
+  // display-only. `varIds` are the plot/table "headers"; `nameOf(id)` resolves the
+  // current display name (falling back to the id itself for any stray key).
+  const varIds = pipeline.map(d => d.id);
+  const nameMap = useMemo(() => Object.fromEntries(pipeline.map(d => [d.id, d.varName])), [pipeline]);
+  const nameOf = useCallback(id => (id in nameMap ? nameMap[id] : id), [nameMap]);
   // Authoritative num/cat kind for each sampler variable, derived from the device's
   // DECLARED outcomes (not the drawn rows), so a plot's type can't silently flip when a
-  // rare non-numeric outcome first appears. Sampler plots use this; EDA keeps colKind.
+  // rare non-numeric outcome first appears. Keyed by device id. Sampler plots use this;
+  // EDA keeps colKind.
   const varKinds = useMemo(
-    () => Object.fromEntries(pipeline.map(d => [d.varName, deviceVarKind(d)])),
+    () => Object.fromEntries(pipeline.map(d => [d.id, deviceVarKind(d)])),
     [pipeline]
   );
   // Label any tracked column (plain stat → statLabel; derived → its expression
   // rendered with operands resolved). Built fresh each render so renames flow through.
   const statsById = Object.fromEntries(trackedStats.map(s => [s.id, s]));
-  const labelFor = s => colLabel(s, statsById);
+  const labelFor = s => colLabel(s, statsById, nameOf);
   // The underlying formula, used as the header tooltip so a custom name never hides
   // what the column actually computes.
-  const exprFor = s => exprLabel(s, statsById);
+  const exprFor = s => exprLabel(s, statsById, nameOf);
   // Plain-stat columns available as operands in the derived calculator, each with its
   // value on the current sample for the live preview.
   const operandCols = trackedStats
     .filter(s => s.kind !== "derived")
-    .map(s => ({ id:s.id, label:statLabel(s), value: currentSample ? computeStat(s, currentSample.rows) : NaN }));
+    .map(s => ({ id:s.id, label:statLabel(s, nameOf), value: currentSample ? computeStat(s, currentSample.rows) : NaN }));
 
   const addDevice = type => {
     const m = { spinner:mkSpinner, stacks:mkStacks, mixer:mkMixer };
@@ -269,14 +271,15 @@ export default function App() {
   const updDevice = (i, d) => {
     const old = pipeline[i];
     const structural = samplingShape(old) !== samplingShape(d);
-    const dependent = trackedStats.some(s => statDependsOn(s, old.varName));
-    const newNames = pipeline.map((dev, j) => j === i ? d.varName : dev.varName);
+    const dependent = trackedStats.some(s => statDependsOn(s, old.id));
+    // Device ids never change on an edit, so the live-id set is just the current pipeline.
+    const liveIds = pipeline.map(dev => dev.id);
     // Outcome edits can flip a variable's kind (numeric ↔ categorical) — even a pure
-    // relabel ("5" → "x") that samplingShape ignores. Apply rename propagation first,
-    // then find numeric-only stats (mean/SD/…) orphaned because their variable is no
-    // longer numeric, so they're dropped rather than silently computing over text.
+    // relabel ("5" → "x") that samplingShape ignores. Apply outcome-relabel propagation
+    // first, then find numeric-only stats (mean/SD/…) orphaned because their variable is
+    // no longer numeric, so they're dropped rather than silently computing over text.
     const renamed = propagateRenames(trackedStats, old, d);
-    const newKinds = Object.fromEntries(pipeline.map((dev, j) => { const nd = j === i ? d : dev; return [nd.varName, deviceVarKind(nd)]; }));
+    const newKinds = Object.fromEntries(pipeline.map((dev, j) => { const nd = j === i ? d : dev; return [nd.id, deviceVarKind(nd)]; }));
     const orphanIds = renamed.filter(s => statKindInvalid(s, newKinds)).map(s => s.id);
     // Distribution-structure guard: only a change to *what gets drawn* (counts,
     // probabilities, with/without replacement, adding/removing outcomes) clears collected
@@ -291,25 +294,25 @@ export default function App() {
           (clearsCollected ? ", and the statistics already collected will be cleared." : ".") + " Continue?"
         : "Editing this sampler deletes the statistics already collected in the table. (The tracked columns are kept.) Continue?";
       if (!window.confirm(msg)) { rejectEdit(); return; }
-      let next = dropInvalid(renamed, newNames);
+      let next = dropInvalid(renamed, liveIds);
       if (dropsColumns) next = dropDependents(next, orphanIds);
       setTrackedStats(next);
       if (clearsCollected) clearCollected();
     } else {
-      // Seamless: propagate any device/outcome renames into tracked specs, keep results.
+      // Seamless: propagate any outcome relabels into tracked specs, keep results.
       setTrackedStats(renamed);
     }
     setPipeline(p => { const a = [...p]; a[i] = d; return a; });
   };
   const remDevice = i => {
     const removed = pipeline[i];
-    const dependent = trackedStats.some(s => statDependsOn(s, removed.varName));
+    const dependent = trackedStats.some(s => statDependsOn(s, removed.id));
     if (collectRows.length && dependent) {
       if (!window.confirm("Removing this sampler deletes the statistics already collected in the table, and any tracked column that depends on it. Continue?")) { rejectEdit(); return; }
       clearCollected();
     }
-    const newNames = pipeline.filter((_, j) => j !== i).map(d => d.varName);
-    setTrackedStats(ts => dropInvalid(ts, newNames));
+    const liveIds = pipeline.filter((_, j) => j !== i).map(d => d.id);
+    setTrackedStats(ts => dropInvalid(ts, liveIds));
     setPipeline(p => p.filter((_, j) => j !== i));
   };
   const movDevice = (i, dir) => setPipeline(p => { const a = [...p], j = i + dir; if (j < 0 || j >= a.length) return a; [a[i], a[j]] = [a[j], a[i]]; return a; });
@@ -492,7 +495,7 @@ export default function App() {
           <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>Sample Results</span>
           {sampleData.length > 0 && <span style={{ fontSize:11, color:"#aaa" }}>n = {sampleData.length}</span>}
         </div>
-        <SampleResults sampleData={sampleData} varNames={varNames} varKinds={varKinds} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats} />
+        <SampleResults sampleData={sampleData} varNames={varIds} varKinds={varKinds} nameOf={nameOf} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats} />
       </div>
 
       {/* Collect Statistics */}
@@ -562,7 +565,7 @@ export default function App() {
               </div>
               <div style={{ display:"flex", gap:8, alignItems:"flex-start", flexWrap:"wrap" }}>
                 <div style={{ flex:"1 1 360px", minWidth:300 }}>
-                  <StatDefiner stat={manualStat} varNames={varNames} sampleData={sampleData}
+                  <StatDefiner stat={manualStat} varNames={varIds} nameOf={nameOf} sampleData={sampleData}
                     onChange={setManualStat} onRemove={() => setManualOpen(false)} />
                 </div>
                 <button onClick={addManualStat} disabled={!manualStat.variable}
