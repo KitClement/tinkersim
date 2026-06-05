@@ -79,14 +79,16 @@ function drawSample(pipeline, sampleSize) {
   for (let s = 0; s < sampleSize; s++) {
     const row = { _sample: s + 1 };
     pipeline.forEach(dev => {
+      // Rows are keyed by the device's stable id (not varName), so a rename never
+      // strands the drawn data; display names resolve through nameOf at render time.
       if (dev.type === "spinner") {
-        row[dev.varName] = sampleSpinner(dev.slices);
+        row[dev.id] = sampleSpinner(dev.slices);
       } else if (dev.type === "stacks") {
         const drawn = drawStacks(dev, state);
-        row[dev.varName] = drawn ? drawn.label : "";
+        row[dev.id] = drawn ? drawn.label : "";
       } else if (dev.type === "mixer") {
         const drawn = drawMixer(dev, state);
-        row[dev.varName] = drawn ? drawn.label : "";
+        row[dev.id] = drawn ? drawn.label : "";
       }
     });
     rows.push(row);
@@ -225,7 +227,7 @@ async function runAnimatedSample({ pipeline, sampleSize, speed, setAnimStates, o
           set(dev.id, { result, removedSet:new Set(removed), bouncing:false });
         }
       }
-      row[dev.varName] = result;
+      row[dev.id] = result; // keyed by stable id (see drawSample)
     }
 
     onRow({ ...row });

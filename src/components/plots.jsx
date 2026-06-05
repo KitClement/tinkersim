@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
 import { COLORS, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR } from "../lib/util";
-import { numericSummary, lsFit, statLabel, computeStat, FN_OPTS } from "../lib/stats";
+import { numericSummary, lsFit, statLabel, statKey, computeStat, FN_OPTS } from "../lib/stats";
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
@@ -16,12 +16,12 @@ import { Sel, ChkLabel } from "./ui";
 // plots render pixel-identically there.
 
 // SVG value label that toggles tracking of `spec` on click.
-function TrackText({ x, y, anchor = "middle", color, fontSize = 9, label, spec, trackable, trackedLabels, onTrackStat }) {
+function TrackText({ x, y, anchor = "middle", color, fontSize = 9, label, spec, trackable, trackedKeys, onTrackStat, nameOf }) {
   if (!trackable || !spec) {
     return <text x={x} y={y} textAnchor={anchor} fontSize={fontSize} fill={color} fontWeight={700}>{label}</text>;
   }
-  const lbl = statLabel(spec);
-  const tracked = trackedLabels && trackedLabels.has(lbl);
+  const lbl = statLabel(spec, nameOf);
+  const tracked = trackedKeys && trackedKeys.has(statKey(spec));
   const w = String(label).length * fontSize * 0.62 + 8, h = fontSize + 5;
   const rx = anchor === "start" ? x - 4 : anchor === "end" ? x - w + 4 : x - w / 2;
   return (
@@ -37,11 +37,11 @@ function TrackText({ x, y, anchor = "middle", color, fontSize = 9, label, spec, 
 // HTML count/percent number (cat plots) that toggles tracking of `spec` on click — or,
 // when the ruler's cat-difference mode is active (`measureSelect` supplied), picks the
 // number as operand A or B for a difference instead of tracking it.
-function CatNum({ text, spec, dim, trackable, trackedLabels, onTrackStat, measureSelect, measureRole }) {
+function CatNum({ text, spec, dim, trackable, trackedKeys, onTrackStat, measureSelect, measureRole, nameOf }) {
   if (measureSelect && spec) {
     const sel = !!measureRole;
     return (
-      <span data-mkey={statLabel(spec)} onClick={e => { e.stopPropagation(); measureSelect(spec); }}
+      <span data-mkey={statKey(spec)} onClick={e => { e.stopPropagation(); measureSelect(spec); }}
         title={sel ? "Selected as " + measureRole + " — click to deselect" : "Click to pick as A or B for the ruler difference"}
         style={{ cursor:"pointer", padding:"0 3px", borderRadius:4, fontWeight:700,
           background: sel ? "#ccfbf1" : "transparent",
@@ -52,8 +52,8 @@ function CatNum({ text, spec, dim, trackable, trackedLabels, onTrackStat, measur
     );
   }
   if (!trackable || !spec) return <span style={{ color: dim ? "#bbb" : "#3730a3" }}>{text}</span>;
-  const lbl = statLabel(spec);
-  const tracked = trackedLabels && trackedLabels.has(lbl);
+  const lbl = statLabel(spec, nameOf);
+  const tracked = trackedKeys && trackedKeys.has(statKey(spec));
   return (
     <span onClick={e => { e.stopPropagation(); onTrackStat(spec); }}
       title={tracked ? "Tracking " + lbl + " — click to remove" : "Click to track " + lbl}
@@ -237,7 +237,7 @@ function RulerOverlay({ W, topY, botY, lineY, sx, inv, xlo, xhi, pts, onChange, 
   const anchorOf = p => {
     if (!snapCandidates) return null;
     let c;
-    if (p.spec) { const lbl = statLabel(p.spec); c = snapCandidates.find(k => k.spec && statLabel(k.spec) === lbl); }
+    if (p.spec) { const key = statKey(p.spec); c = snapCandidates.find(k => k.spec && statKey(k.spec) === key); }
     else c = snapCandidates.find(k => !k.spec && k.y != null && Math.abs(k.value - p.value) < 1e-9);
     return (c && c.y != null) ? { x: sx(c.value), y: c.y } : null;
   };
@@ -400,7 +400,11 @@ function MeasureConnector({ containerRef, aKey, bKey, diff, fmt, trackable, onTr
 //   1) cat × cat grid   2) num × cat split dot plots
 //   3) single categorical bins   4) scatter / univariate numeric (SVG)
 // ══════════════════════════════════════════════════════════════════════════════
-function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedLabels, varKinds }) {
+function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds }) {
+  // `headers` / `xVar` / `yVar` are device IDS on sampler plots; `nm(id)` resolves the
+  // display name. EDA passes real header strings and no `nameOf`, so `nm` is identity
+  // there and every label renders unchanged.
+  const nm = nameOf || (h => h);
   const [dotSize, setDotSize] = useState(5);
 
   // Stat overlay toggles
@@ -534,7 +538,7 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
   // a number to click), which makes the separate "Show values" toggle redundant.
   const trackable = !!onTrackStat;
   const showVals = showValues || trackable;
-  const trackProps = { trackable, trackedLabels, onTrackStat };
+  const trackProps = { trackable, trackedKeys, onTrackStat, nameOf };
 
   // ── Divider tool (Phase 6) ──
   // Gated to plots with a continuous numeric X axis: univariate numeric, or num × cat
@@ -675,15 +679,15 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
 
   // Mechanic 3 (cat difference): up to two clicked stat specs; their live difference.
   const measureSelect = spec => setCatSel(prev => {
-    const lbl = statLabel(spec);
-    const idx = prev.findIndex(s => statLabel(s) === lbl);
+    const key = statKey(spec);
+    const idx = prev.findIndex(s => statKey(s) === key);
     if (idx >= 0) return prev.filter((_, i) => i !== idx); // deselect
     const next = [...prev, spec];
     return next.length > 2 ? next.slice(next.length - 2) : next; // keep the last two
   });
   const measureRoleOf = spec => {
     if (!showCatRuler) return null;
-    const i = catSel.findIndex(s => statLabel(s) === statLabel(spec));
+    const i = catSel.findIndex(s => statKey(s) === statKey(spec));
     return i === 0 ? "A" : i === 1 ? "B" : null;
   };
   const catVals = catSel.map(s => computeStat(s, rows));
@@ -695,8 +699,8 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
   const measure = showCatRuler ? {
     select: measureSelect,
     roleOf: measureRoleOf,
-    aKey: catSel[0] ? statLabel(catSel[0]) : null,
-    bKey: catSel[1] ? statLabel(catSel[1]) : null,
+    aKey: catSel[0] ? statKey(catSel[0]) : null,
+    bKey: catSel[1] ? statKey(catSel[1]) : null,
     diff: catDiff,
     fmt: fmtNum,
     trackable: !!(trackable && onTrackDiff),
@@ -707,8 +711,8 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
     <div ref={plotRef} style={{ flex:"2 1 460px", minWidth:320 }}>
       {/* Controls */}
       <div style={{ display:"flex", gap:8, marginBottom:8, flexWrap:"wrap", alignItems:"center" }}>
-        <Sel label="X" value={xVar} onChange={setXVar} options={headers} />
-        <Sel label="Y" value={yVar} onChange={setYVar} options={["none", ...headers.filter(h => h !== xVar)]} labels={["— none —", ...headers.filter(h => h !== xVar)]} />
+        <Sel label="X" value={xVar} onChange={setXVar} options={headers} labels={headers.map(nm)} />
+        <Sel label="Y" value={yVar} onChange={setYVar} options={["none", ...headers.filter(h => h !== xVar)]} labels={["— none —", ...headers.filter(h => h !== xVar).map(nm)]} />
         <label style={ctrlLbl}>dot size
           <input type="range" min={1} max={12} value={dotSize} onChange={e => setDotSize(+e.target.value)} style={{ width:55, marginLeft:4 }} />
         </label>
@@ -803,7 +807,7 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
       {(() => {
         // MODE 1: both categorical → grid of cells with stacked dots + count/%
         if (bivariate && !xNumeric && !yNumeric) {
-          return <CatCatGrid rows={rows} xVar={xVar} yVar={yVar} R={R} width={W}
+          return <CatCatGrid rows={rows} xVar={xVar} yVar={yVar} nameOf={nameOf} R={R} width={W}
             showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand}
             {...trackProps} measure={measure} />;
         }
@@ -814,14 +818,14 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
           const catVar = xNumeric ? yVar : xVar;
           const numVar = xNumeric ? xVar : yVar;
           const numTime = xNumeric ? xTime : yTime;
-          return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} R={R} width={W} isTime={numTime}
+          return <SplitDotPlots rows={rows} catVar={catVar} numVar={numVar} nameOf={nameOf} R={R} width={W} isTime={numTime}
             orientation={xNumeric ? "h" : "v"}
             showBox={showBox} showMean={showMean} showSD={showSD} showValues={showVals}
             expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps} {...divProps} {...rulerProps} />;
         }
         // MODE 3: single categorical → binned stacked-dot cells
         if (!bivariate && !xNumeric) {
-          return <UniCatPlot rows={rows} catVar={xVar} R={R} width={W}
+          return <UniCatPlot rows={rows} catVar={xVar} nameOf={nameOf} R={R} width={W}
             showCount={showCount} showPct={showPct} expanded={expandCats} onToggleExpand={toggleExpand} {...trackProps}
             measure={measure} />;
         }
@@ -849,8 +853,8 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
               </g>
             ))}
             {/* axis labels */}
-            <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{xVar}</text>
-            {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{yVar}</text>}
+            <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{nm(xVar)}</text>
+            {yS && <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(yVar)}</text>}
             {/* dots */}
             {dots.map((d, i) => <circle key={i} cx={d.x} cy={d.y} r={R} fill="#3b82f6" fillOpacity={Math.min(0.85, Math.max(0.2, 70 / Math.sqrt(dots.length + 1)))} />)}
             {/* LS line */}
@@ -947,7 +951,10 @@ function Plot({ rows, headers, xVar, yVar, setXVar, setYVar, width, onTrackStat,
   );
 }
 
-function StatDefiner({ stat, varNames, sampleData, onChange, onRemove }) {
+function StatDefiner({ stat, varNames, nameOf, sampleData, onChange, onRemove }) {
+  // `varNames` are device IDS; the Sels show display names via `nm` but store the id in
+  // the spec. `allVals`/`condVals` read rows by that id (correct, rows are id-keyed).
+  const nm = nameOf || (h => h);
   const allVals = stat.variable && sampleData.length ? [...new Set(sampleData.map(r => r[stat.variable]))] : [];
   const condVals = stat.condVar && sampleData.length ? [...new Set(sampleData.map(r => r[stat.condVar]))] : [];
   const needsTarget = ["proportion", "countVal"].includes(stat.fn);
@@ -964,14 +971,14 @@ function StatDefiner({ stat, varNames, sampleData, onChange, onRemove }) {
       <button onClick={onRemove} style={{ ...btnX, position:"absolute", top:7, right:7, fontSize:14 }}>×</button>
       <div style={{ display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", paddingRight:20 }}>
         <Sel label="Stat" value={stat.fn} onChange={v => onChange({ ...stat, fn:v })} options={FN_OPTS.map(o => o.v)} labels={FN_OPTS.map(o => o.l)} />
-        <Sel label="Variable" value={stat.variable || ""} onChange={v => onChange({ ...stat, variable:v })} options={["", ...varNames]} labels={["—", ...varNames]} />
-        {needsTwo && <Sel label="vs" value={stat.variable2 || ""} onChange={v => onChange({ ...stat, variable2:v })} options={["", ...varNames]} labels={["—", ...varNames]} />}
+        <Sel label="Variable" value={stat.variable || ""} onChange={v => onChange({ ...stat, variable:v })} options={["", ...varNames]} labels={["—", ...varNames.map(nm)]} />
+        {needsTwo && <Sel label="vs" value={stat.variable2 || ""} onChange={v => onChange({ ...stat, variable2:v })} options={["", ...varNames]} labels={["—", ...varNames.map(nm)]} />}
         {needsTarget && allVals.length > 0 && <Sel label="= value" value={stat.target || ""} onChange={v => onChange({ ...stat, target:v })} options={["", ...allVals]} labels={["—", ...allVals]} />}
         {needsTarget && !allVals.length && <label style={ctrlLbl}>= <input value={stat.target || ""} onChange={e => onChange({ ...stat, target:e.target.value })} style={{ ...iSm, width:50, marginLeft:3 }} /></label>}
-        <Sel label="| filter" value={stat.condVar || "none"} onChange={v => onChange({ ...stat, condVar:v === "none" ? "" : v, condVal:"" })} options={["none", ...varNames]} labels={["(none)", ...varNames]} />
+        <Sel label="| filter" value={stat.condVar || "none"} onChange={v => onChange({ ...stat, condVar:v === "none" ? "" : v, condVal:"" })} options={["none", ...varNames]} labels={["(none)", ...varNames.map(nm)]} />
         {stat.condVar && <Sel label="=" value={stat.condVal || ""} onChange={v => onChange({ ...stat, condVal:v })} options={["", ...condVals]} labels={["—", ...condVals]} />}
       </div>
-      <div style={{ marginTop:5, fontSize:11, color:"#6366f1", fontFamily:"monospace" }}>→ {statLabel(stat)}</div>
+      <div style={{ marginTop:5, fontSize:11, color:"#6366f1", fontFamily:"monospace" }}>→ {statLabel(stat, nameOf)}</div>
     </div>
   );
 }
@@ -1151,11 +1158,14 @@ function EDAPlot({ rows, headers }) {
 // raw draws of a sampler run. The table is chronological: newest rows append at
 // the BOTTOM and the scroll view auto-follows as draws stream in.
 // ══════════════════════════════════════════════════════════════════════════════
-function SampleResults({ sampleData, varNames, varKinds, onTrackStat, onTrackDiff, trackedStats }) {
+function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, onTrackDiff, trackedStats }) {
+  // `varNames` are device IDS (the plot/table headers); `nameOf(id)` resolves the
+  // display name. `nm` falls back to identity so this still works if no map is passed.
+  const nm = nameOf || (h => h);
   const [xVar, setXVar] = useState(varNames[0] || "");
   const [yVar, setYVar] = useState("none");
   const scrollRef = useRef(null);
-  const trackedLabels = useMemo(() => new Set((trackedStats || []).map(statLabel)), [trackedStats]);
+  const trackedKeys = useMemo(() => new Set((trackedStats || []).map(statKey)), [trackedStats]);
 
   // Auto-scroll the table to the bottom as new draws arrive
   useEffect(() => {
@@ -1185,7 +1195,7 @@ function SampleResults({ sampleData, varNames, varKinds, onTrackStat, onTrackDif
             <thead>
               <tr>
                 {cols.map(c => (
-                  <th key={c} style={{ position:"sticky", top:0, background: c === xVar ? "#c7d2fe" : (c === yVar ? "#a7f3d0" : "#f8f9fa"), color: c === "_sample" ? "#bbb" : "#334155", fontWeight: c === "_sample" ? 600 : 700, padding:"4px 8px", textAlign: c === "_sample" ? "right" : "left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>{c === "_sample" ? "#" : c}</th>
+                  <th key={c} style={{ position:"sticky", top:0, background: c === xVar ? "#c7d2fe" : (c === yVar ? "#a7f3d0" : "#f8f9fa"), color: c === "_sample" ? "#bbb" : "#334155", fontWeight: c === "_sample" ? 600 : 700, padding:"4px 8px", textAlign: c === "_sample" ? "right" : "left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>{c === "_sample" ? "#" : nm(c)}</th>
                 ))}
               </tr>
             </thead>
@@ -1203,8 +1213,8 @@ function SampleResults({ sampleData, varNames, varKinds, onTrackStat, onTrackDif
         {sampleData.length > MAX_ROWS && <div style={{ fontSize:10, color:"#aaa", marginTop:4 }}>Showing last {MAX_ROWS} of {sampleData.length} draws</div>}
       </div>
       {/* RIGHT: shared interactive plot */}
-      <Plot rows={sampleData} headers={varNames} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
-        varKinds={varKinds} onTrackStat={onTrackStat} onTrackDiff={onTrackDiff} trackedLabels={trackedLabels} />
+      <Plot rows={sampleData} headers={varNames} nameOf={nameOf} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar}
+        varKinds={varKinds} onTrackStat={onTrackStat} onTrackDiff={onTrackDiff} trackedKeys={trackedKeys} />
     </div>
   );
 }
@@ -1313,7 +1323,8 @@ function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabe
 // UNI-CAT PLOT — single categorical variable as binned stacked-dot columns
 // (a 1-D version of CatCatGrid). Collapses to top 10 + "Other" past 10 categories.
 // ══════════════════════════════════════════════════════════════════════════════
-function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat, measure }) {
+function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure }) {
+  const nm = nameOf || (h => h);
   const measureSelect = measure && measure.select, measureRoleOf = measure && measure.roleOf;
   const wrapRef = useRef(null);
   const counts = {};
@@ -1355,8 +1366,8 @@ function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false,
               display:"flex", flexDirection:"column", alignItems:"center", padding:"0 6px", boxSizing:"border-box" }}>
               {hasLabel && (
                 <div style={{ fontSize:12, fontWeight:600, minHeight:16, display:"flex", gap:4 }}>
-                  {showCount && <CatNum text={cnt} dim={cnt === 0} spec={countSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
-                  {showPct && <CatNum text={`(${pct}%)`} dim={cnt === 0} spec={propSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
+                  {showCount && <CatNum text={cnt} dim={cnt === 0} spec={countSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} nameOf={nm} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
+                  {showPct && <CatNum text={`(${pct}%)`} dim={cnt === 0} spec={propSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} nameOf={nm} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
                 </div>
               )}
               {/* bottom-anchored dot grid: fills a row left→right, then stacks
@@ -1375,7 +1386,7 @@ function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false,
         })}
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:4 }}>
-        <span style={{ fontSize:11, color:"#666", fontWeight:700 }}>{catVar}</span>
+        <span style={{ fontSize:11, color:"#666", fontWeight:700 }}>{nm(catVar)}</span>
         {allCats.length > 10 && (
           <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10 }}>
             {expanded ? "Collapse to top 10" : `Show all ${allCats.length}`}
@@ -1392,7 +1403,8 @@ function UniCatPlot({ rows, catVar, R, width, showCount = true, showPct = false,
 // reference layout where the colored number = P(row | column).
 // ══════════════════════════════════════════════════════════════════════════════
 
-function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat, measure }) {
+function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, showPct = false, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, measure }) {
+  const nm = nameOf || (h => h);
   const measureSelect = measure && measure.select, measureRoleOf = measure && measure.roleOf;
   const wrapRef = useRef(null);
   // Per-axis counts drive collapsing of high-cardinality axes (>10 categories)
@@ -1472,8 +1484,8 @@ function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = fa
                   display:"flex", flexDirection:"column" }}>
                   {hasLabel && (
                     <div style={{ fontSize:12, fontWeight:600, display:"flex", gap:4, flexWrap:"wrap" }}>
-                      {showCount && <CatNum text={c} dim={c === 0} spec={countSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
-                      {showPct && <CatNum text={`(${pct}%)`} dim={c === 0} spec={propSpec} trackable={trackable} trackedLabels={trackedLabels} onTrackStat={onTrackStat} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
+                      {showCount && <CatNum text={c} dim={c === 0} spec={countSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} nameOf={nm} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
+                      {showPct && <CatNum text={`(${pct}%)`} dim={c === 0} spec={propSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} nameOf={nm} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
                     </div>
                   )}
                   {/* Stacked dots */}
@@ -1498,10 +1510,10 @@ function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = fa
         </div>
         {/* Axis titles */}
         <div style={{ textAlign:"center", marginTop:4, fontSize:11, color:"#666", fontWeight:700,
-          marginLeft:LABEL_W }}>{xVar}</div>
+          marginLeft:LABEL_W }}>{nm(xVar)}</div>
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:10, fontSize:10, color:"#aaa", marginTop:4, marginLeft:LABEL_W - 10 }}>
-        <span>Rows = {yVar} · row-conditional %: P({xVar} | {yVar})</span>
+        <span>Rows = {nm(yVar)} · row-conditional %: P({nm(xVar)} | {nm(yVar)})</span>
         {collapsible && (
           <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10 }}>
             {expanded ? "Collapse to top 10" : "Show all categories"}
@@ -1517,11 +1529,12 @@ function CatCatGrid({ rows, xVar, yVar, R, width, showCount = true, showPct = fa
 // variable, for comparing distributions across groups. Optional box/mean/SD per group.
 // ══════════════════════════════════════════════════════════════════════════════
 
-function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedLabels, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff }) {
+function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orientation = "h", showBox, showMean, showSD, showValues, expanded, onToggleExpand, trackable, trackedKeys, onTrackStat, divOn, divCuts, onDivChange, divSnap, divShowCount, divShowPct, divFmt, rulerOn, rulerPts, onRulerChange, rulerShowBox, rulerFmt, onTrackDiff }) {
+  const nm = nameOf || (h => h);
   // Per-group tracking spec: a numeric stat conditioned on this group (null for the
   // "Other" bucket or when the plot isn't trackable).
   const grpSpec = (cat, fn) => (trackable && cat !== OTHER_CAT) ? { fn, variable:numVar, condVar:catVar, condVal:String(cat) } : null;
-  const tp = { trackable, trackedLabels, onTrackStat };
+  const tp = { trackable, trackedKeys, onTrackStat };
   // Collapse high-cardinality grouping variable into top 10 + "Other"
   const catCount = {};
   rows.forEach(r => { const v = r[catVar]; if (v !== "" && v !== undefined) catCount[v] = (catCount[v] || 0) + 1; });
@@ -1630,8 +1643,8 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
             );
           })}
           <line x1={PL} y1={PT + iH} x2={W - PR} y2={PT + iH} stroke="#ccc" strokeWidth={1.5} />
-          <text x={PL + iW / 2} y={H - 4} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{catVar}</text>
-          <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{numVar}</text>
+          <text x={PL + iW / 2} y={H - 4} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{nm(catVar)}</text>
+          <text x={14} y={PT + iH / 2} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600} transform={"rotate(-90,14," + (PT + iH / 2) + ")"}>{nm(numVar)}</text>
         </svg>
         {allCats.length > 10 && (
           <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10, marginTop:4 }}>
@@ -1767,7 +1780,7 @@ function SplitDotPlots({ rows, catVar, numVar, R, width, isTime, orientation = "
             <text x={sx(t)} y={H - PB + 16} textAnchor="middle" fontSize={10} fill="#999">{fmt(t)}</text>
           </g>
         ))}
-        <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{numVar} (by {catVar})</text>
+        <text x={PL + iW / 2} y={H - 6} textAnchor="middle" fontSize={11} fill="#666" fontWeight={600}>{nm(numVar)} (by {nm(catVar)})</text>
         {/* Divider tool (Phase 6) — one shared cut line across every group band */}
         {divOn && divCuts && divCuts.length > 0 && (
           <DividerLines W={W} topY={PT} botY={H - PB} sx={sx}
