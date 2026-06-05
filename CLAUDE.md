@@ -93,13 +93,14 @@ Both are off by default and gated to plots where they make sense.
 - **Divider** — draggable vertical line(s) on a continuous numeric **X** axis. Single mode
   shows P(<v)/P(≥v); range mode adds a second handle for P(<lo)/P(lo–hi)/P(>hi). num×cat
   shows one shared cut with per-group read-outs. On-plot count/proportion labels (toggled
-  by # / %) are **click-to-track** in Sample Results (`countBetween`/`propBetween`).
+  by the Count / Proportion checkboxes; proportions render to 3 decimals, e.g. `0.500`)
+  are **click-to-track** in Sample Results (`countBetween`/`propBetween`).
   Gated to univariate numeric and num×cat-with-numeric-X; hidden on cat×cat, uni-cat, and
   num×num scatter.
 - **Ruler** — three mechanics, each gated to its plot type: *axis distance* (two snappable
   endpoints on a numeric axis; difference-in-group-means is the num×cat headline),
   *residual to LS line* (num×num scatter, `y − ŷ`), and *difference of two measures*
-  (cat×cat percentages via `MeasureConnector`). A "＋ track" affordance authors a Phase-5
+  (cat×cat proportions via `MeasureConnector`). A "＋ track" affordance authors a Phase-5
   derived column (`A − B`) that backfills and plots. Endpoints anchored to a measure
   recompute live from the current data.
 

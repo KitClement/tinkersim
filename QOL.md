@@ -203,21 +203,22 @@ identity key. Walking the pipeline end to end:
 
 ## Phase C — Wording consistency (P3)
 
-### C1. Standardize on "percentage" over "proportion"  ·  P3
-- **Symptom.** Plot/measurement tools mix "proportion" and "percentage" though the
-  UI displays percentages throughout. Inconsistent vocabulary confuses students.
-- **Files.** `proportion`/`prop(` wording appears in `src/components/plots.jsx`,
-  `src/lib/measure.js`, `src/lib/stats.js`, `src/components/devices.jsx`, and
-  `src/App.jsx`. (Also referenced in `CLAUDE.md`/`plan.md` — docs can stay as-is or
-  follow.)
-- **Approach.** Audit every user-**visible** string and the `# / %` toggles; rename
-  "proportion" → "percentage" where the displayed value is in fact a percent.
-  **Caution:** keep internal identifiers/stat keys (`propBetween`,
-  `proportion` stat ids, expression aliases) unless you also migrate every
-  reference — a rename there risks breaking tracked-column expressions and the
-  click-to-track plumbing. Prefer changing **labels only**, leaving keys intact.
-  Double-check the actual values are percent-scaled (×100) and not 0–1 proportions
-  before relabeling.
+### C1. Standardize on "proportion" over "percentage"  ·  P3  ·  ✅ DONE
+- **Symptom.** Plots displayed integer **percentages** (`85%`) while the statistics
+  layer — `computeStat`, the tracked/collected columns, and even the cat×cat ruler
+  connector — was already **proportion-based** (0–1). So a tracked proportion column
+  read `0.851` next to a plot that read `85%`. Inconsistent and confusing.
+- **Decision (reversed).** The original idea was to standardize on *percentage*; we
+  flipped it. Because the stats are already proportions, the cheaper, lower-risk fix is
+  to make the **plots show proportions to 3 decimals** (`0.851`) so they match the
+  collected statistics. No change to stored data, stat keys, or `computeStat`; the
+  `prop(...)` formula labels and the `Proportion` dropdown option were already correct.
+- **Done.** Display-only edits in `src/components/plots.jsx`: the three on-plot percent
+  labels (divider region read-outs, univariate-categorical, cat×cat grid) now render
+  `fmtP(p) = p.toFixed(3)`; the count/proportion toggle captions read "Proportion"
+  (dropping the `%` glyph); the cat×cat header reads "row-conditional proportion".
+  Spinner slice weights (`devices.jsx`) and the batch-progress `%` (`App.jsx`) are not
+  statistics and were left as percentages.
 
 ---
 
@@ -267,7 +268,8 @@ identity key. Walking the pipeline end to end:
    duplicate-name guard (A2), in one branch with a short dedicated plan.~~ ✅ DONE
    (devices now identified by stable `id`; `varName` is display-only via `nameOf`.)
 3. ~~**B2**, **B3** — sampler interaction polish.~~ ✅ DONE
-4. **C1** — wording sweep (mechanical, low risk if labels-only).
+4. ~~**C1** — proportion/percentage consistency sweep.~~ ✅ DONE
+   (plots now display 3-decimal proportions, matching the proportion-valued stats.)
 5. **D1**, **D2** — feature work; size each with its own short plan before starting.
 
 ## Conventions reminder

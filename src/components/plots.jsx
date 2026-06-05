@@ -8,6 +8,10 @@ import { makeScale, stackDots } from "../lib/scale";
 import { clampVal, snapValue, snapMeasure, regions } from "../lib/measure";
 import { Sel, ChkLabel } from "./ui";
 
+// Format a proportion (0–1) for on-plot read-outs — fixed 3 decimals so the plots
+// match the proportion-valued collected statistics (e.g. 0.851, not 85%).
+const fmtP = v => (Number.isFinite(v) ? v.toFixed(3) : "—");
+
 // ── Click-to-track helpers ─────────────────────────────────────────────────────
 // A statistic is promoted into Collect Statistics by clicking the number that
 // shows it on the plot (not a separate chip). Both helpers fall back to a plain,
@@ -167,7 +171,6 @@ function RegionLabels({ regions: regs, sx, xL, xR, y, showCount, showPct, total,
         const a = Math.max(xL, r.lo === -Infinity ? xL : sx(r.lo));
         const b = Math.min(xR, r.hi === Infinity ? xR : sx(r.hi));
         const cx = (a + b) / 2;
-        const pct = total ? Math.round(r.p * 100) : 0;
         const both = showCount && showPct;
         // Match the categorical plots' convention: count on the left, percent on the
         // right in parentheses (each still individually click-to-track).
@@ -176,7 +179,7 @@ function RegionLabels({ regions: regs, sx, xL, xR, y, showCount, showPct, total,
             {showCount && <TrackText x={both ? cx - 3 : cx} y={y} anchor={both ? "end" : "middle"} color="#475569" fontSize={9}
               label={String(r.n)} spec={regionSpec(r, "countBetween", base)} {...trackProps} />}
             {showPct && <TrackText x={both ? cx + 3 : cx} y={y} anchor={both ? "start" : "middle"} color="#475569" fontSize={9}
-              label={"(" + pct + "%)"} spec={regionSpec(r, "propBetween", base)} {...trackProps} />}
+              label={"(" + (total ? fmtP(r.p) : "—") + ")"} spec={regionSpec(r, "propBetween", base)} {...trackProps} />}
           </g>
         );
       })}
@@ -736,7 +739,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
         {showCatToggles && (
           <>
             <ChkLabel checked={showCount} onChange={setShowCount} label="# Count" />
-            <ChkLabel checked={showPct} onChange={setShowPct} label="% Percent" />
+            <ChkLabel checked={showPct} onChange={setShowPct} label="Proportion" />
           </>
         )}
         {dividerAvailable && <ChkLabel checked={divOn} onChange={setDivOn} label="📏 Divider" />}
@@ -754,7 +757,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
             </label>
           ))}
           <ChkLabel checked={divShowCount} onChange={setDivShowCount} label="# Count" />
-          <ChkLabel checked={divShowPct} onChange={setDivShowPct} label="% Proportion" />
+          <ChkLabel checked={divShowPct} onChange={setDivShowPct} label="Proportion" />
         </div>
       )}
 
@@ -1353,7 +1356,6 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
       <div style={{ display:"flex", alignItems:"stretch" }}>
         {shown.map((c, ci) => {
           const cnt = cellCount(c);
-          const pct = total ? Math.round(cnt / total * 100) : 0;
           const color = COLORS[ci % COLORS.length];
           // Each visible number is a click target: count → count of catVar=c;
           // percent → proportion catVar=c. "Other" has no clean target.
@@ -1367,7 +1369,7 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
               {hasLabel && (
                 <div style={{ fontSize:12, fontWeight:600, minHeight:16, display:"flex", gap:4 }}>
                   {showCount && <CatNum text={cnt} dim={cnt === 0} spec={countSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} nameOf={nm} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
-                  {showPct && <CatNum text={`(${pct}%)`} dim={cnt === 0} spec={propSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} nameOf={nm} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
+                  {showPct && <CatNum text={`(${total ? fmtP(cnt / total) : "—"})`} dim={cnt === 0} spec={propSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} nameOf={nm} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
                 </div>
               )}
               {/* bottom-anchored dot grid: fills a row left→right, then stacks
@@ -1470,9 +1472,8 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
             {xCats.map(xc => {
               const c = grid[yc][xc];
               const rowTot = rowTotals[yc] || 0;
-              const pct = rowTot ? Math.round(c / rowTot * 100) : 0;
               // Each visible number is a click target: count → count of X=xc given
-              // Y=yc; percent → that row-conditional proportion P(X=xc | Y=yc).
+              // Y=yc; proportion → that row-conditional proportion P(X=xc | Y=yc).
               // OTHER buckets can't form a clean target, so they stay non-clickable.
               const cellOk = xc !== OTHER_CAT && yc !== OTHER_CAT;
               const base = { variable:xVar, target:String(xc), condVar:yVar, condVal:String(yc) };
@@ -1485,7 +1486,7 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
                   {hasLabel && (
                     <div style={{ fontSize:12, fontWeight:600, display:"flex", gap:4, flexWrap:"wrap" }}>
                       {showCount && <CatNum text={c} dim={c === 0} spec={countSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} nameOf={nm} measureSelect={measureSelect} measureRole={countSpec && measureRoleOf ? measureRoleOf(countSpec) : null} />}
-                      {showPct && <CatNum text={`(${pct}%)`} dim={c === 0} spec={propSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} nameOf={nm} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
+                      {showPct && <CatNum text={`(${rowTot ? fmtP(c / rowTot) : "—"})`} dim={c === 0} spec={propSpec} trackable={trackable} trackedKeys={trackedKeys} onTrackStat={onTrackStat} nameOf={nm} measureSelect={measureSelect} measureRole={propSpec && measureRoleOf ? measureRoleOf(propSpec) : null} />}
                     </div>
                   )}
                   {/* Stacked dots */}
@@ -1513,7 +1514,7 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
           marginLeft:LABEL_W }}>{nm(xVar)}</div>
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:10, fontSize:10, color:"#aaa", marginTop:4, marginLeft:LABEL_W - 10 }}>
-        <span>Rows = {nm(yVar)} · row-conditional %: P({nm(xVar)} | {nm(yVar)})</span>
+        <span>Rows = {nm(yVar)} · row-conditional proportion: P({nm(xVar)} | {nm(yVar)})</span>
         {collapsible && (
           <button onClick={onToggleExpand} style={{ ...btnNav, fontSize:10 }}>
             {expanded ? "Collapse to top 10" : "Show all categories"}
