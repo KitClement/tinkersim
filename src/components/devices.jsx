@@ -3,8 +3,96 @@ import { iSm, btnX, btnPlus, btnArr } from "../lib/styles";
 import { COLORS, clamp, uid } from "../lib/util";
 import { InlineEdit, PasteButton, ReplacementToggle, RangeInput } from "./ui";
 
+// ── Spinner slice math: every helper returns a fresh slices array that sums to 100 ──
+// Floor so a slice never fully vanishes (small enough that manual entry stays flexible;
+// borders this thin are hard to grab by drag, but the number box can still set them).
+const MIN_PCT = 0.1;
+
+// Set slice `i` to `newPct`, absorbing the delta from the OTHER slices so Σ stays 100.
+// Others are visited in adjacency order — below first, then nearest-above — so editing a
+// value pulls only from the sections beneath it, cascading upward only when those can't
+// supply enough. e.g. [33.3,33.3,33.4] set #0→40 ⇒ [40,26.6,33.4].
+function redistribute(slices, i, newPct) {
+  const n = slices.length;
+  if (n <= 1) return slices.map(s => ({ ...s, pct: 100 }));
+  newPct = clamp(newPct, MIN_PCT, 100 - MIN_PCT * (n - 1));
+  const out = slices.map(s => ({ ...s }));
+  let delta = newPct - slices[i].pct;           // >0 take from others; <0 give back
+  out[i].pct = newPct;
+  const order = [];                              // below first, then nearest-above:
+  for (let j = i + 1; j < n; j++) order.push(j);  // i+1…n-1
+  for (let j = i - 1; j >= 0; j--) order.push(j); // i-1…0
+  if (delta > 0) {                               // pull `delta` from others, down to MIN
+    for (const j of order) {
+      if (delta <= 1e-9) break;
+      const give = Math.min(delta, out[j].pct - MIN_PCT);
+      out[j].pct -= give; delta -= give;
+    }
+  } else if (delta < 0) {                         // hand `-delta` back, nearest first
+    out[order[0]].pct += -delta;
+  }
+  return out;
+}
+
+// Append a slice at an equal share (100/(n+1)); scale existing down to fill the rest.
+function addSlice(slices) {
+  const n = slices.length;
+  const fresh = 100 / (n + 1);
+  const sum = slices.reduce((s, sl) => s + sl.pct, 0) || 1;
+  const factor = (100 - fresh) / sum;
+  const out = slices.map(s => ({ ...s, pct: s.pct * factor }));
+  out.push({ id: uid(), label: `S${n + 1}`, pct: fresh, color: COLORS[n % COLORS.length] });
+  return out;
+}
+
+// Drop slice `i`; scale the remainder back up to sum 100. Never removes the last slice.
+function removeSlice(slices, i) {
+  if (slices.length <= 1) return slices;
+  const rest = slices.filter((_, j) => j !== i);
+  const sum = rest.reduce((s, sl) => s + sl.pct, 0) || 1;
+  const factor = 100 / sum;
+  return rest.map(s => ({ ...s, pct: s.pct * factor }));
+}
+
+// Reset every slice to an equal share.
+function equalize(slices) {
+  const eq = 100 / slices.length;
+  return slices.map(s => ({ ...s, pct: eq }));
+}
+
+// Percentage entry that commits on blur/Enter (not per keystroke) so the redistribution
+// — and the invalidation guard it can trigger — runs once, not on every digit typed.
+function PctInput({ pct, onCommit }) {
+  const [val, setVal] = useState("");
+  const [editing, setEditing] = useState(false);
+  const rounded = Math.round(pct * 10) / 10;
+  const commit = () => {
+    setEditing(false);
+    const p = parseFloat(val);
+    if (!isNaN(p)) onCommit(p);
+  };
+  return (
+    <input type="number" value={editing ? val : rounded} min={MIN_PCT} max={100} step={1}
+      onFocus={() => { setEditing(true); setVal(String(rounded)); }}
+      onChange={e => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === "Enter") { commit(); e.target.blur(); }
+        else if (e.key === "Escape") { setEditing(false); e.target.blur(); }
+      }}
+      style={{ ...iSm, width:46 }} />
+  );
+}
+
 function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
   const total = device.slices.reduce((s, sl) => s + sl.pct, 0) || 100;
+  const svgRef = useRef(null);
+  // Local preview of slices mid-drag. We do NOT call onChange on every mousemove: each
+  // onChange runs updDevice's invalidation guard, which can pop a window.confirm — firing
+  // one dialog per pixel of drag. Instead preview locally and commit one onChange on
+  // mouseup (mirrors the StacksDevice fix). On cancel, no setPipeline runs so device.slices
+  // is unchanged and the re-render snaps the border back.
+  const [dragPreview, setDragPreview] = useState(null); // slices[] | null
 
   // Arrow angle driven by animState
   const angleRef = useRef(-90);
@@ -75,13 +163,54 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
   }, [animState && animState.drawId]);
 
   const rad = a => a * Math.PI / 180;
+
+  // Slices to render: the live drag preview while dragging, else the committed device.
+  const displaySlices = dragPreview || device.slices;
+  const dispTotal = displaySlices.reduce((s, sl) => s + sl.pct, 0) || 100;
+  // Cumulative percentage before slice j (its start position, 0–100).
+  const cumBefore = j => displaySlices.slice(0, j).reduce((s, sl) => s + sl.pct, 0);
+
+  // Drag the interior boundary at the start of slice k (between slice k-1 and slice k),
+  // trading percentage between just those two so the total is conserved.
+  const startBorderDrag = (e, k) => {
+    e.preventDefault();
+    const base = device.slices.map(s => ({ ...s }));
+    const cumLo = base.slice(0, k - 1).reduce((s, sl) => s + sl.pct, 0); // start of slice k-1
+    const span = base[k - 1].pct + base[k].pct;                          // combined budget
+    let committed = null;
+    const move = ev => {
+      const rect = svgRef.current.getBoundingClientRect();
+      // client → SVG user space (viewBox -1.15 … +1.15 on each axis).
+      const ux = ((ev.clientX - rect.left) / rect.width) * 2.3 - 1.15;
+      const uy = ((ev.clientY - rect.top) / rect.height) * 2.3 - 1.15;
+      const angle = Math.atan2(uy, ux) * 180 / Math.PI;     // drawing angle (y-down)
+      const offset = (((angle + 90) % 360) + 360) % 360;     // degrees CW from the top
+      const pctPos = offset / 360 * 100;
+      const newCum = clamp(pctPos, cumLo + MIN_PCT, cumLo + span - MIN_PCT);
+      const next = base.map(s => ({ ...s }));
+      next[k - 1].pct = newCum - cumLo;
+      next[k].pct = cumLo + span - newCum;
+      committed = next;
+      setDragPreview(next);
+    };
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      setDragPreview(null);
+      // Commit once, only if a drag actually moved the border.
+      if (committed) onChange({ ...device, slices: committed });
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
   let cumAngle = -90;
 
   return (
     <div>
-      <svg viewBox="-1.15 -1.15 2.3 2.3" style={{ width:"100%", maxWidth:160, display:"block", margin:"0 auto" }}>
-        {device.slices.map((sl, i) => {
-          const sweep = (sl.pct / total) * 360;
+      <svg ref={svgRef} viewBox="-1.15 -1.15 2.3 2.3" style={{ width:"100%", maxWidth:160, display:"block", margin:"0 auto" }}>
+        {displaySlices.map((sl, i) => {
+          const sweep = (sl.pct / dispTotal) * 360;
           const x1 = Math.cos(rad(cumAngle)), y1 = Math.sin(rad(cumAngle));
           const x2 = Math.cos(rad(cumAngle + sweep)), y2 = Math.sin(rad(cumAngle + sweep));
           const large = sweep > 180 ? 1 : 0;
@@ -95,7 +224,7 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
             <g key={sl.id}>
               <path d={d} fill={sl.color} stroke="#fff" strokeWidth="0.04"
                 opacity={hasResult && !isResult ? 0.45 : 1} />
-              {(sl.pct / total) > 0.07 && (
+              {(sl.pct / dispTotal) > 0.07 && (
                 <text x={tx} y={ty} textAnchor="middle" dominantBaseline="middle"
                   fontSize="0.18" fontWeight="bold" fill="#fff"
                   style={{ pointerEvents:"none" }}>
@@ -105,7 +234,20 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
             </g>
           );
         })}
-        <g transform={"rotate(" + (displayAngle + 90) + ")"}>
+        {/* Draggable interior boundaries (slice 0 stays anchored at the top). Wide
+            transparent hit lines over the white slice borders. */}
+        {displaySlices.map((sl, k) => {
+          if (k === 0) return null;
+          const ang = -90 + (cumBefore(k) / dispTotal) * 360;
+          const rx = Math.cos(rad(ang)), ry = Math.sin(rad(ang));
+          return (
+            <line key={"h" + sl.id} x1="0" y1="0" x2={rx} y2={ry}
+              stroke="transparent" strokeWidth="0.14"
+              style={{ cursor:"col-resize" }}
+              onMouseDown={e => startBorderDrag(e, k)} />
+          );
+        })}
+        <g transform={"rotate(" + (displayAngle + 90) + ")"} style={{ pointerEvents:"none" }}>
           <polygon points="0,-0.87 -0.055,-0.12 0.055,-0.12" fill="#1a1a2e" opacity="0.85" />
         </g>
         <circle cx="0" cy="0" r="0.08" fill="#fff" stroke="#aaa" strokeWidth="0.03" />
@@ -120,18 +262,19 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
               <InlineEdit value={sl.label}
                 onChange={v => { const s = [...device.slices]; s[i] = { ...s[i], label:v }; onChange({ ...device, slices:s }); }} />
             </div>
-            <input type="number" value={Math.round(sl.pct * 10) / 10} min={0.1} max={100} step={1}
-              onChange={e => { const s = [...device.slices]; s[i] = { ...s[i], pct:parseFloat(e.target.value) || 1 }; onChange({ ...device, slices:s }); }}
-              style={{ ...iSm, width:46 }} />
+            <PctInput pct={sl.pct}
+              onCommit={p => onChange({ ...device, slices: redistribute(device.slices, i, p) })} />
             <span style={{ fontSize:10, color:"#bbb" }}>%</span>
-            <button onClick={() => onChange({ ...device, slices:device.slices.filter((_, j) => j !== i) })} style={btnX}>×</button>
+            <button disabled={device.slices.length <= 1}
+              onClick={() => onChange({ ...device, slices: removeSlice(device.slices, i) })} style={btnX}>×</button>
           </div>
         ))}
-        <div style={{ fontSize:10, color:Math.abs(total - 100) > 0.5 ? "#e74c3c" : "#bbb" }}>
-          Total: {Math.round(total * 10) / 10}%
+        <div style={{ display:"flex", gap:4, marginTop:2 }}>
+          <button onClick={() => onChange({ ...device, slices: addSlice(device.slices) })}
+            style={{ ...btnPlus, flex:1 }}>+ slice</button>
+          <button onClick={() => onChange({ ...device, slices: equalize(device.slices) })}
+            style={{ ...btnPlus, flex:1 }}>Equalize</button>
         </div>
-        <button onClick={() => onChange({ ...device, slices:[...device.slices, { id:uid(), label:`S${device.slices.length + 1}`, pct:10, color:COLORS[device.slices.length % COLORS.length] }] })}
-          style={{ ...btnPlus, marginTop:2 }}>+ slice</button>
       </div>
       <div style={{ fontSize:11, color:"#bbb", display:"flex", alignItems:"center", gap:5, marginTop:6 }}>
       <input type="checkbox" checked={true} disabled={true} readOnly />
