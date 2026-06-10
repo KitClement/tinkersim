@@ -96,6 +96,17 @@ export default function App() {
   // by the CollectTable (rows) and the DistributionPlot (dots), toggled from either.
   const [collectSelectedIds, setCollectSelectedIds] = useState(() => new Set());
   const [collectScroll, setCollectScroll] = useState(null); // { id } — reveal a just-selected row
+  // The divider cut on the Collect (sampling-distribution) plot, lifted up so the generated
+  // inference code mirrors the actual cutoff. `{ statId, cuts, range }` | null. The setter
+  // dedupes (the plot re-reports each render) so an unchanged cut doesn't loop re-renders.
+  const [dividerState, setDividerState] = useState(null);
+  const onCollectDivider = useCallback(d => {
+    setDividerState(prev => {
+      const same = prev === d || (prev && d && prev.statId === d.statId && prev.range === d.range &&
+        prev.cuts.length === d.cuts.length && prev.cuts.every((v, i) => v === d.cuts[i]));
+      return same ? prev : d;
+    });
+  }, []);
   const toggleCollectId = id => {
     const adding = !collectSelectedIds.has(id);
     setCollectSelectedIds(prev => {
@@ -602,8 +613,8 @@ export default function App() {
   // section is placed next to the tool it mirrors (sampler / sample-results / collect-table /
   // collect-plot); the generators read the same specs the UI uses (see lib/codegen.js).
   const code = useMemo(
-    () => (codeLang === "off" ? null : generateCode({ pipeline, sampleSize, runMode, stopRule, trackedStats, collectedCount: collectRows.length }, codeLang)),
-    [codeLang, pipeline, sampleSize, runMode, stopRule, trackedStats, collectRows.length]
+    () => (codeLang === "off" ? null : generateCode({ pipeline, sampleSize, runMode, stopRule, trackedStats, collectedCount: collectRows.length, divider: dividerState }, codeLang)),
+    [codeLang, pipeline, sampleSize, runMode, stopRule, trackedStats, collectRows.length, dividerState]
   );
 
   return (
@@ -889,8 +900,9 @@ export default function App() {
         {trackedStats.length > 0 && collectRows.length > 0 && (
           <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:12 }}>
             <CodeBeside sectionId="inference" lines={code && code.inference} cbMode={cbMode}>
-              <DistributionPlot columns={trackedStats.map(s => ({ label: labelFor(s), values: collectRows.map(r => r[s.id]) }))}
-                rowIds={collectRows.map(r => r._id)} selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId} />
+              <DistributionPlot columns={trackedStats.map(s => ({ id: s.id, label: labelFor(s), values: collectRows.map(r => r[s.id]) }))}
+                rowIds={collectRows.map(r => r._id)} selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId}
+                onDivider={codeLang === "off" ? undefined : onCollectDivider} />
             </CodeBeside>
           </div>
         )}

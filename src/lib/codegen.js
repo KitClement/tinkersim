@@ -114,6 +114,33 @@ function withIds(stats, names) {
 const collectN = cfg => (cfg.collectedCount > 0 ? cfg.collectedCount : 1000);
 const collectNote = cfg => (cfg.collectedCount > 0 ? "   # samples collected so far" : "   # number of samples to collect");
 
+// The Collect-plot divider (lifted from the UI), resolved against the *enabled* stats so the
+// inference section can mirror the real cutoff. Returns `{ id, cuts, range }` keyed by the
+// generated result-vector name, or null (no divider / on a derived column / off).
+const numLit = v => String(parseFloat(Number(v).toFixed(4)));
+function dividerInfo(cfg, stats) {
+  const d = cfg.divider;
+  if (!d || !d.cuts || !d.cuts.length || d.statId == null) return null;
+  const match = stats.find(({ s }) => s.id === d.statId);
+  if (!match) return null;
+  const cuts = d.cuts.map(Number).filter(v => !isNaN(v));
+  if (!cuts.length) return null;
+  return { id: match.id, cuts, range: d.range && cuts.length >= 2 };
+}
+// The proportion line(s) a divider implies over a vector/Series expression `vec` — a band for
+// range mode (P(lo ≤ x ≤ hi)), else the two tails (P(x ≥ v) / P(x < v)), matching measure.js.
+function tailLines(vec, div, lang) {
+  const ge = (v, a) => (lang === "r" ? `mean(${v} >= ${a})` : `(${v} >= ${a}).mean()`);
+  const lt = (v, a) => (lang === "r" ? `mean(${v} < ${a})` : `(${v} < ${a}).mean()`);
+  const band = (v, a, b) => (lang === "r" ? `mean(${v} >= ${a} & ${v} <= ${b})` : `((${v} >= ${a}) & (${v} <= ${b})).mean()`);
+  if (div.range) {
+    const a = numLit(Math.min(div.cuts[0], div.cuts[1])), b = numLit(Math.max(div.cuts[0], div.cuts[1]));
+    return [`${band(vec, a, b)}   # P(${a} <= stat <= ${b})`];
+  }
+  const v = numLit(div.cuts[0]);
+  return [`${ge(vec, v)}   # P(stat >= ${v})`, `${lt(vec, v)}   # P(stat < ${v})`];
+}
+
 // ─── Region predicate for countBetween / propBetween (mirrors computeStat's inR) ─
 // Elementwise on a vector/Series in both languages, so `&` (not R's `&&` / Python's `and`).
 function regionExpr(xExpr, s, lang) {
@@ -206,8 +233,13 @@ function genCompact(cfg, names, lang) {
     }
 
     const inference = mk("inference");
+    const divR = dividerInfo(cfg, stats);
     if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
-    else {
+    else if (divR) {
+      inference.push("# Inference from the sampling distribution (divider cutoff)");
+      tailLines(divR.id, divR, "r").forEach(t => inference.push(t));
+      inference.push(`quantile(${divR.id}, c(0.025, 0.975))   # 95% percentile interval`);
+    } else {
       inference.push("# Inference from the sampling distribution");
       inference.push(`quantile(${first.id}, c(0.025, 0.975))   # 95% percentile interval`);
       inference.push(`mean(${first.id} >= 0)                   # tail proportion — set your cutoff`);
@@ -244,8 +276,14 @@ function genCompact(cfg, names, lang) {
   }
 
   const inference = mk("inference");
+  const divP = dividerInfo(cfg, stats);
   if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
-  else {
+  else if (divP) {
+    inference.push("# Inference from the sampling distribution (divider cutoff)");
+    inference.push(`${divP.id} = np.array(${divP.id})`);
+    tailLines(divP.id, divP, "py").forEach(t => inference.push(t));
+    inference.push(`np.quantile(${divP.id}, [0.025, 0.975])   # 95% percentile interval`);
+  } else {
     inference.push("# Inference from the sampling distribution");
     inference.push(`${first.id} = np.array(${first.id})`);
     inference.push(`np.quantile(${first.id}, [0.025, 0.975])   # 95% percentile interval`);
@@ -427,8 +465,13 @@ function genSplit(cfg, names, lang) {
     }
 
     const inference = mk("inference");
+    const divR = dividerInfo(cfg, stats);
     if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
-    else {
+    else if (divR) {
+      inference.push("# Inference from the sampling distribution (divider cutoff)");
+      tailLines(`dist$${divR.id}`, divR, "r").forEach(t => inference.push(t));
+      inference.push(`quantile(dist$${divR.id}, c(0.025, 0.975))   # 95% percentile interval`);
+    } else {
       inference.push("# Inference from the sampling distribution");
       inference.push(`quantile(dist$${first.id}, c(0.025, 0.975))   # 95% percentile interval`);
       inference.push(`mean(dist$${first.id} >= 0)                   # tail proportion — set your cutoff`);
@@ -483,8 +526,13 @@ function genSplit(cfg, names, lang) {
   }
 
   const inference = mk("inference");
+  const divP = dividerInfo(cfg, stats);
   if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
-  else {
+  else if (divP) {
+    inference.push("# Inference from the sampling distribution (divider cutoff)");
+    tailLines(`dist[${key(divP.id)}]`, divP, "py").forEach(t => inference.push(t));
+    inference.push(`np.quantile(dist[${key(divP.id)}], [0.025, 0.975])   # 95% percentile interval`);
+  } else {
     inference.push("# Inference from the sampling distribution");
     inference.push(`np.quantile(dist[${key(first.id)}], [0.025, 0.975])   # 95% percentile interval`);
     inference.push(`(dist[${key(first.id)}] >= 0).mean()                  # tail proportion — set your cutoff`);

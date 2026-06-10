@@ -403,7 +403,7 @@ function MeasureConnector({ containerRef, aKey, bKey, diff, fmt, trackable, onTr
 //   1) cat × cat grid   2) num × cat split dot plots
 //   3) single categorical bins   4) scatter / univariate numeric (SVG)
 // ══════════════════════════════════════════════════════════════════════════════
-function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect }) {
+function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTrackStat, onTrackDiff, trackedKeys, varKinds, selectedIds, onToggleSelect, onDivider }) {
   // `headers` / `xVar` / `yVar` are device IDS on sampler plots; `nm(id)` resolves the
   // display name. EDA passes real header strings and no `nameOf`, so `nm` is identity
   // there and every label renders unchanged.
@@ -603,6 +603,13 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   const divProps = { divOn: showDivider, divCuts: effCuts, onDivChange: setDivCuts,
     divSnap: showDivider ? divDomain.snap : null, divShowCount, divShowPct,
     divFmt: showDivider ? divDomain.fmt : null };
+  // Report the active divider cut to a host that wants to mirror it (the Collect plot lifts
+  // this into App so the generated inference code uses the real cutoff). `variable` is the
+  // current X header; `cuts` are in stat units. Null when the divider is off.
+  useEffect(() => {
+    if (!onDivider) return;
+    onDivider(showDivider ? { variable: xVar, cuts: effCuts, range: divRange } : null);
+  }, [onDivider, showDivider, xVar, divRange, effCuts.join(",")]);
 
   // ── Ruler tool (Phase 6c) ──
   // Mechanic 1 (axis distance / difference of measures) shares the divider's gating and
@@ -1132,7 +1139,7 @@ function scrollRowIntoView(container, id) {
   else if (rRect.bottom > cRect.bottom) container.scrollTop += (rRect.bottom - cRect.bottom);
 }
 
-function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect }) {
+function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect, onDivider }) {
   // Disambiguate any repeated labels so each column is a distinct header/key
   // (tracked stats are already unique; manually-defined ones may collide).
   const headers = useMemo(() => {
@@ -1165,9 +1172,18 @@ function DistributionPlot({ columns, width, rowIds, selectedIds, onToggleSelect 
     return out;
   }, [columns, headers, rowIds]);
 
+  // Translate the divider's X header back to its column id (a tracked-stat id) so the host
+  // can match it to the generated code's statistic. `headers[k]` ↔ `columns[k]` by index.
+  const handleDivider = useCallback(d => {
+    if (!onDivider) return;
+    if (!d) { onDivider(null); return; }
+    const k = headers.indexOf(d.variable);
+    onDivider({ statId: k >= 0 && columns[k] ? columns[k].id : null, cuts: d.cuts, range: d.range });
+  }, [onDivider, headers, columns]);
+
   if (!columns.length) return null;
   return <Plot rows={rows} headers={headers} xVar={xVar} yVar={yVar} setXVar={setXVar} setYVar={setYVar} width={width}
-    selectedIds={selectedIds} onToggleSelect={onToggleSelect} />;
+    selectedIds={selectedIds} onToggleSelect={onToggleSelect} onDivider={onDivider ? handleDivider : undefined} />;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

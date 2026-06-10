@@ -237,12 +237,17 @@ Results / Collect Statistics overhaul, divider + ruler) and the next feature wav
 in `.claude/plans/` (forked/conditional stages, run-until, URL sharing, hidden samplers,
 R/Python code panels, serialization polish) all shipped. Possible follow-ons:
 - **Without-replacement fidelity in generated code** (currently flagged-but-with-replacement).
-- **Per-tool placement of the code panels** (today they live in one bottom "Code" card; the
-  plan's ideal is each section beside its tool — sampler / Sample Results / Collect / divider).
-- **Multi-condition stop rules** (run-until is single-condition v1; no AND/OR yet) and a
-  divider state lifted into `App` so `genInference` can mirror the actual cut.
+- **Multi-condition stop rules** (run-until is single-condition v1; no AND/OR yet).
 - Trackability for the ruler's **residual** case; the divider on num×num scatter (both
   deferred earlier). More device types or pipeline composition, if the curriculum needs them.
+
+The Collect-plot **divider is wired into the inference code**: `Plot` reports its active cut
+via an `onDivider` callback, `DistributionPlot` maps the X header back to its tracked-stat id,
+and `App` lifts it into `dividerState` (a deduped setter prevents a re-render loop) → the
+`generateCode` cfg. `codegen.js`'s `dividerInfo`/`tailLines` then emit the real cutoff —
+`mean(vec >= v)` / a band `mean(vec >= lo & vec <= hi)` (matching `measure.js` `regions`) over
+the matched statistic's result vector — falling back to the `>= 0` placeholder when the divider
+is off or sits on a non-emitted (derived) column.
 
 ## Conventions
 - Keep the app dependency-light. Don't add a UI framework or state library without reason.
