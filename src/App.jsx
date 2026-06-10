@@ -6,7 +6,8 @@ import { colLabel, exprLabel, computeStatRow, evalExpr } from "./lib/expr";
 import { drawSample, stageVarKind, stageOutcomes, mkStage, migratePipeline, rekeyStats, rekeyStopRule, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
 import { encodeConfig, decodeConfig, checkHiddenPassword, shareURL } from "./lib/share";
 import { StageCard } from "./components/devices";
-import { CodePanels } from "./components/code";
+import { CodeControls, CodeBeside } from "./components/code";
+import { generateCode } from "./lib/codegen";
 import { CopyColumnButton } from "./components/ui";
 import { EDAPlot, SampleResults, StatDefiner, DerivedBuilder, DistributionPlot, CollectTable } from "./components/plots";
 
@@ -594,6 +595,15 @@ export default function App() {
 
   const SPEED_LABELS = ["🐢 Slow", "🐇 Fast", "⚡ Instant"];
 
+  // Generated R/Python code (Task E), recomputed from the live config. `null` when the code
+  // toggle is off so each `CodeBeside` falls back to a no-layout-cost full-width tool. Each
+  // section is placed next to the tool it mirrors (sampler / sample-results / collect-table /
+  // collect-plot); the generators read the same specs the UI uses (see lib/codegen.js).
+  const code = useMemo(
+    () => (codeLang === "off" ? null : generateCode({ pipeline, sampleSize, runMode, stopRule, trackedStats }, codeLang)),
+    [codeLang, pipeline, sampleSize, runMode, stopRule, trackedStats]
+  );
+
   return (
     <div style={{ fontFamily:"'IBM Plex Sans',system-ui,sans-serif", background:"#f1f2f5", minHeight:"100vh", padding:14, boxSizing:"border-box" }}>
       {/* Header */}
@@ -601,6 +611,12 @@ export default function App() {
         <div>
           <h1 style={{ margin:0, fontSize:20, fontWeight:800, color:"#1a1a2e" }}>🎲 TinkerSim</h1>
           <p style={{ margin:0, fontSize:11, color:"#999" }}>Probability sampler & simulation</p>
+        </div>
+        {/* Code-panel controls live at the top-right of the whole page; each section's code
+            box then sits beside the tool it mirrors. */}
+        <div style={{ marginLeft:"auto" }}>
+          <CodeControls codeLang={codeLang} cbMode={cbMode}
+            onSetLang={setCodeLang} onToggleCb={() => setCbMode(c => !c)} />
         </div>
       </div>
 
@@ -651,6 +667,7 @@ export default function App() {
 
       {/* Pipeline */}
       <div style={{ background:"#fff", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px rgba(0,0,0,0.04)", border:"1px solid #eee" }}>
+       <CodeBeside sectionId="sampler" lines={code && code.sampler} cbMode={cbMode}>
         <div style={{ display:"flex", gap:8, marginBottom:10, alignItems:"center", flexWrap:"wrap" }}>
           <span style={{ fontSize:11, fontWeight:700, color:"#bbb", letterSpacing:1, textTransform:"uppercase" }}>Sampler Pipeline</span>
           {concealed ? (
@@ -765,15 +782,18 @@ export default function App() {
             </div>
           ))}
         </div>
+       </CodeBeside>
       </div>
 
       {/* Sample Results */}
       <div style={{ background:"#fff", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px rgba(0,0,0,0.04)", border:"1px solid #eee", opacity:sampleData.length ? 1 : 0.4, transition:"opacity 0.3s" }}>
+       <CodeBeside sectionId="single" lines={code && code.single} cbMode={cbMode}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
           <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>Sample Results</span>
           {sampleData.length > 0 && <span style={{ fontSize:11, color:"#aaa" }}>n = {sampleData.length}</span>}
         </div>
         <SampleResults sampleData={sampleData} varNames={varIds} varKinds={varKinds} nameOf={nameOf} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats} />
+       </CodeBeside>
       </div>
 
       {/* Collect Statistics */}
@@ -805,8 +825,10 @@ export default function App() {
         {/* Stacked top-to-bottom: the tracked-statistic table, then the manual
             builder (a table-authoring tool), then the sampling-distribution plot. */}
         <div style={{ marginBottom:14 }}>
-          <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} labelFor={labelFor} titleFor={exprFor}
-            selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId} scrollTarget={collectScroll} />
+          <CodeBeside sectionId="collect" lines={code && code.collect} cbMode={cbMode}>
+            <CollectTable trackedStats={trackedStats} collectRows={collectRows} onRemove={untrackStat} labelFor={labelFor} titleFor={exprFor}
+              selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId} scrollTarget={collectScroll} />
+          </CodeBeside>
         </div>
 
         {/* Derived-statistic calculator — combine collected columns into a new column
@@ -859,19 +881,12 @@ export default function App() {
         {/* Sampling-distribution plot for a chosen tracked column. */}
         {trackedStats.length > 0 && collectRows.length > 0 && (
           <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:12 }}>
-            <DistributionPlot columns={trackedStats.map(s => ({ label: labelFor(s), values: collectRows.map(r => r[s.id]) }))}
-              rowIds={collectRows.map(r => r._id)} selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId} />
+            <CodeBeside sectionId="inference" lines={code && code.inference} cbMode={cbMode}>
+              <DistributionPlot columns={trackedStats.map(s => ({ label: labelFor(s), values: collectRows.map(r => r[s.id]) }))}
+                rowIds={collectRows.map(r => r._id)} selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId} />
+            </CodeBeside>
           </div>
         )}
-      </div>
-
-      {/* Code (R / Python) — parallel, runnable code mirroring the sampler (Task E).
-          Off by default; the toggle reveals four symbol/color-coded sections + an
-          integrated program. The generators read the live config so code never diverges. */}
-      <div style={{ background:"#fff", borderRadius:14, padding:14, marginTop:14, boxShadow:"0 1px 6px rgba(0,0,0,0.04)", border:"1px solid #eee" }}>
-        <CodePanels codeLang={codeLang} cbMode={cbMode}
-          config={{ pipeline, sampleSize, runMode, stopRule, trackedStats }}
-          onSetLang={setCodeLang} onToggleCb={() => setCbMode(c => !c)} />
       </div>
     </div>
   );

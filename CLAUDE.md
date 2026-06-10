@@ -51,9 +51,10 @@ dependency-light and self-contained (no chart lib, no state lib).
     and `DerivedBuilder`.
   - `devices.jsx` — `StageCard` (wraps a stage; renders forked branch sub-cards +
     `BranchConditionEditor`), `SpinnerDevice`, `StacksDevice`, `MixerDevice`, `DeviceCard`.
-  - `code.jsx` — `CodePanels` (Task E): the language toggle (off/R/Python) + color-blind
-    toggle, the four `CodeBox` panels (gradient header with the section shape cut out in
-    white), and the integrated panel whose gutter color-codes each line by its section.
+  - `code.jsx` — Task E UI: `CodeControls` (page-header off/R/Python + color-blind toggle),
+    `CodeBox` (a panel with a white→section-color gradient header carrying the section symbol
+    as a white watermark), and `CodeBeside` (lays a tool's content next to its code box,
+    stacking on narrow widths).
   - `ui.jsx` — small shared widgets (`Sel`, `InlineEdit`, `ReplacementToggle`, …).
 
 ## Architecture (current)
@@ -110,8 +111,14 @@ branch devices' declared outcomes.
   opaque placeholders + a "Reveal" button until the password is entered. Browser dialogs are
   wrapped in module-level `safePrompt`/`safeAlert`/`safeConfirm` (they throw in embedded/
   headless contexts).
-- **Code panels** (`components/code.jsx`, `lib/codegen.js`): off by default; the toggle reveals
-  four runnable R/Python sections + an integrated program. See "Hard-won constraints" #7.
+- **Code panels** (`components/code.jsx`, `lib/codegen.js`): off by default. The page-header
+  `CodeControls` toggle (off/R/Python + color-blind) drives them; each section's `CodeBox` is
+  then placed **beside the tool it mirrors** via `CodeBeside` (Sampler ★ → Sampler Pipeline,
+  Single sample ● → Sample Results, For-loop ▲ → Collect table, Inference ■ → Collect plot),
+  wrapping to stacked (code below) on narrow widths. The `CodeBox` header is a white→section-
+  color gradient with the section symbol as a large white watermark. See "Hard-won
+  constraints" #7. (`generateCode` still returns an `integrated` array — currently unused by
+  the distributed layout, kept for a possible single-program view.)
 
 ### The unified `Plot` primitive
 `Plot` (in `plots.jsx`) is the single plotting component behind EDA, Sample Results, and
