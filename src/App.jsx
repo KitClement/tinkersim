@@ -602,8 +602,8 @@ export default function App() {
   // section is placed next to the tool it mirrors (sampler / sample-results / collect-table /
   // collect-plot); the generators read the same specs the UI uses (see lib/codegen.js).
   const code = useMemo(
-    () => (codeLang === "off" ? null : generateCode({ pipeline, sampleSize, runMode, stopRule, trackedStats }, codeLang)),
-    [codeLang, pipeline, sampleSize, runMode, stopRule, trackedStats]
+    () => (codeLang === "off" ? null : generateCode({ pipeline, sampleSize, runMode, stopRule, trackedStats, collectedCount: collectRows.length }, codeLang)),
+    [codeLang, pipeline, sampleSize, runMode, stopRule, trackedStats, collectRows.length]
   );
 
   return (

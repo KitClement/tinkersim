@@ -34,12 +34,15 @@ dependency-light and self-contained (no chart lib, no state lib).
     returns `{sampler, single, collect, inference, integrated}`, each an array of
     `{text, section}` lines. Reads the **same** specs the UI uses (stage outcomes, the
     `computeStat` fn semantics, `stopReached`) so code and tool never diverge. Emits one of
-    **two shapes** (`isSimple`): the **compact** form (one stage, no fork, fixed n,
-    single-column univariate stat) draws the whole sample in one call and inlines the
-    statistic — no helper functions, the common teaching case; the **split** form (forks,
-    run-until, or multi-column stats like slope/group means) keeps the
-    `draw_one`/`draw_sample`/`compute_stat` decomposition those genuinely need. R is base R;
-    Python is **pandas/numpy** (and **statsmodels** for regression).
+    **two shapes** (`isSimple`): the **compact** form (no fork, fixed n, every enabled stat
+    single-column) draws each device as ONE vector — `sample(c(...),n)` / `pop.sample(n)`,
+    multiple devices ⇒ multiple vectors — and inlines each statistic, no helper functions;
+    the **split** form (forks, run-until, or multi-column stats like slope/group means) keeps
+    the `draw_one`/`draw_sample`/`compute_stats` decomposition those genuinely need (per-row
+    drawing keeps columns row-aligned). The **single** + **collect** sections mirror the
+    *tracked-stat table*: one entry per enabled stat (nothing until one is enabled), and the
+    collect loop's `N` is `collectedCount` (samples collected so far, default 1000 before any).
+    R is base R; Python is **pandas/numpy** (and **statsmodels** for regression).
   - `scale.js` — `makeScale` (axis scale builder) + `stackDots` (tallest-column dot
     stacking). Shared by every plot.
   - `expr.js` — derived-statistic engine: `lexExpr`/`evalExpr`/`validateExpr`,
@@ -204,13 +207,12 @@ These were the source of real bugs during development. Preserve them.
    `stopReached`) so the R/Python can't drift from the tool. Scope: **with replacement**
    (a without-replacement device is flagged in a comment, not reproduced); population SD;
    type-7 quantiles (R `type=7`; pandas `.quantile()`/`np.quantile` are type-7 by default) to
-   match `quantile()`; the headline statistic is the first plain tracked stat (derived
-   columns aren't emitted). The **compact** path draws the whole sample at once
-   (`sample(...,n)` / `pop.sample(n)`); the **split** path draws row-by-row (needed for forks
-   /until/multi-column). Verify a change by copying a section into a real REPL — esbuild-bundled
-   Node round-trips of `generateCode` (the `from "./sampling"` import needs bundling, not bare
-   Node ESM) plus an actual `python` run (pandas/numpy/statsmodels installed) are the cheap
-   check (R isn't installed here). Keep the four section colors/symbols in `styles.js`'
+   match `quantile()`; one column per **enabled** tracked stat — nothing until one is enabled,
+   derived columns aren't emitted, and inference targets the first enabled stat. The **compact**
+   path draws the whole sample at once (`sample(...,n)` / `pop.sample(n)`); the **split** path
+   draws row-by-row (needed for forks/until/multi-column). `codegen.js` has **no imports**
+   (it's self-contained), so a bare-Node ESM round-trip of `generateCode` plus an actual
+   `python` run (pandas/numpy/statsmodels installed) are the cheap check (R isn't installed here). Keep the four section colors/symbols in `styles.js`'
    `CODE_SECTIONS` as the single palette source; color-blind mode remaps **only** red→black
    and green→gray.
 

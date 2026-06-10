@@ -9,18 +9,19 @@
 // Sampler section).
 //
 // TWO shapes of output, picked by `isSimple`:
-//   • COMPACT (the common teaching case): one stage, no fork, fixed n, a single-column
-//     univariate statistic. We draw the whole sample in one call and inline the statistic —
-//     no helper functions. e.g. R `sample(c(1:10), 10, replace=TRUE)` → `mean(x)`.
+//   • COMPACT (the common teaching case): no fork, fixed n, and every enabled statistic reads a
+//     single column. Each device is drawn as ONE vector (`sample(c(...), n)` / `pop.sample(n)`)
+//     and each statistic is inlined — no helper functions, even with several devices.
 //   • SPLIT (forks, run-until, or multi-column stats like slope / group means): keeps the
-//     `draw_one` / `draw_sample` / `compute_stat` decomposition those genuinely require.
+//     `draw_one` / `draw_sample` / `compute_stats` decomposition those genuinely require
+//     (per-row drawing keeps columns row-aligned for regression / cross-column subsetting).
 //
-// Python uses pandas/numpy (and statsmodels for regression); R is base R. Scope (v1): sampling
-// is WITH replacement (a without-replacement device is flagged in a comment, not reproduced);
-// population SD; type-7 quantiles. The headline statistic is the first plain tracked stat (or a
-// sensible default); derived columns aren't emitted.
-
-import { stageVarKind, stageOutcomes } from "./sampling";
+// The Sample-Results ("single") and Collect ("collect") sections mirror the TABLE state:
+// one entry per *enabled* tracked statistic (nothing until the student enables one), and the
+// collect loop's N is the number of samples collected so far (`collectedCount`). Python uses
+// pandas/numpy (statsmodels for regression); R is base R. Scope: WITH replacement (a
+// without-replacement device is flagged in a comment); population SD; type-7 quantiles. Derived
+// columns aren't emitted.
 
 // ─── Literals & identifiers ───────────────────────────────────────────────────
 // A label is emitted as a numeric literal only when it parses as a finite number — so a
@@ -30,14 +31,15 @@ const lit = v => (isNumLit(v) ? String(Number(v)) : JSON.stringify(String(v)));
 // JSON.stringify gives a safely-escaped double-quoted string, valid in both R and Python.
 const key = name => JSON.stringify(name);
 const vec = (labels, lang) => (lang === "r" ? "c(" : "[") + labels.map(lit).join(", ") + (lang === "r" ? ")" : "]");
-// Sanitize a varName into a valid R/Python identifier; dedupe across the pipeline so two
-// names that collapse to the same identifier ("a b" / "a-b") still get distinct symbols.
+// Sanitize a name into a valid R/Python identifier.
 function safeName(raw) {
   let s = String(raw || "").replace(/[^A-Za-z0-9_]/g, "_");
   if (!s) s = "v";
   if (/^[0-9]/.test(s)) s = "v" + s;
   return s;
 }
+// Stage varNames → identifiers, deduped so two names that collapse to the same identifier
+// ("a b" / "a-b") still get distinct symbols.
 function buildNames(pipeline) {
   const map = {}, used = new Set();
   pipeline.forEach(st => {
@@ -70,6 +72,48 @@ function outcomeSpec(dev) {
 // A stage with a single (default) branch — the device it always draws from.
 const defDevice = st => (st.branches.find(b => b.condVar === null) || st.branches[0]).device;
 
+// ─── Statistic selection & identity ───────────────────────────────────────────
+// The enabled, code-emittable statistics: plain (non-derived) tracked stats. Derived columns
+// aren't emitted (scope); an empty list means "nothing enabled yet".
+const plainStats = cfg => (cfg.trackedStats || []).filter(s => s && s.kind !== "derived" && s.fn);
+// A statistic reads a single column (no cross-column alignment) — eligible for the compact path.
+const singleColumn = s => !s.condVar && !s.variable2 && s.fn !== "slope" && s.fn !== "intercept";
+// A readable, valid identifier for one statistic (its column in the collect table).
+function statId(s, names) {
+  const v = names[s.variable] || "x", t = s.target != null ? "_" + safeName(s.target) : "";
+  switch (s.fn) {
+    case "mean": return `mean_${v}`;
+    case "median": return `median_${v}`;
+    case "sd": return `sd_${v}`;
+    case "min": return `min_${v}`;
+    case "max": return `max_${v}`;
+    case "q1": return `q1_${v}`;
+    case "q3": return `q3_${v}`;
+    case "count": return `n_${v}`;
+    case "countVal": return `count_${v}${t}`;
+    case "proportion": return `prop_${v}${t}`;
+    case "countBetween": return `count_${v}`;
+    case "propBetween": return `prop_${v}`;
+    case "slope": return `slope_${names[s.variable2] || "y"}_${v}`;
+    case "intercept": return `intercept_${names[s.variable2] || "y"}_${v}`;
+    default: return `stat_${v}`;
+  }
+}
+// Pair each stat with a unique identifier (suffix collisions).
+function withIds(stats, names) {
+  const used = new Set(), out = [];
+  stats.forEach(s => {
+    let base = statId(s, names), id = base, k = 2;
+    while (used.has(id)) id = base + "_" + k++;
+    used.add(id); out.push({ s, id });
+  });
+  return out;
+}
+// The collect loop's N = samples collected so far (falls back to a teaching default of 1000
+// before any have been collected).
+const collectN = cfg => (cfg.collectedCount > 0 ? cfg.collectedCount : 1000);
+const collectNote = cfg => (cfg.collectedCount > 0 ? "   # samples collected so far" : "   # number of samples to collect");
+
 // ─── Region predicate for countBetween / propBetween (mirrors computeStat's inR) ─
 // Elementwise on a vector/Series in both languages, so `&` (not R's `&&` / Python's `and`).
 function regionExpr(xExpr, s, lang) {
@@ -81,31 +125,9 @@ function regionExpr(xExpr, s, lang) {
   return parts.length > 1 ? parts.map(p => `(${p})`).join(" & ") : parts[0];
 }
 
-// Choose the headline statistic: the first plain (non-derived) tracked stat, else a sensible
-// default — mean of the first numeric stage, or the proportion of the first outcome.
-function headlineStat(cfg) {
-  const plain = (cfg.trackedStats || []).find(s => s && s.kind !== "derived" && s.fn);
-  if (plain) return plain;
-  const numStage = cfg.pipeline.find(st => stageVarKind(st).numeric);
-  if (numStage) return { fn: "mean", variable: numStage.id };
-  const st = cfg.pipeline[0];
-  return st ? { fn: "proportion", variable: st.id, target: stageOutcomes(st)[0] || "" } : { fn: "count", variable: "" };
-}
-// Name the collected sampling-distribution vector after the statistic (matches the example:
-// means / medians / proportions / slopes …).
-function resultName(s) {
-  const m = { mean: "means", median: "medians", sd: "sds", proportion: "proportions", countVal: "counts",
-    count: "counts", slope: "slopes", intercept: "intercepts", q1: "q1s", q3: "q3s", min: "mins",
-    max: "maxes", propBetween: "proportions", countBetween: "counts" };
-  return (s && m[s.fn]) || "stats";
-}
-// A statistic is single-column when it reads one column and needs no row alignment.
-const singleColumn = s => !s.condVar && !s.variable2 && s.fn !== "slope" && s.fn !== "intercept";
-
 // ╔══════════════════════════════════════════════════════════════════════════════╗
-// ║  COMPACT PATH — one stage, no fork, fixed n, single-column univariate stat     ║
+// ║  COMPACT PATH — no fork, fixed n, single-column stats: one vector per device    ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
-// One sample drawn in a single call; the statistic inlined. No helper functions.
 
 // The whole-sample draw expression for one device.
 function drawVec(col, dev, lang) {
@@ -156,38 +178,40 @@ function vStat(s, v, lang) {
 }
 
 function genCompact(cfg, names, lang) {
-  const st = cfg.pipeline[0], dev = defDevice(st);
-  const col = names[st.id];
-  const s = headlineStat(cfg), v = names[s.variable] || col;
-  const R = resultName(s);
-  const { labels, replace } = outcomeSpec(dev);
-  const wor = replace === false;
+  const stats = withIds(plainStats(cfg), names);
+  const wor = cfg.pipeline.some(st => outcomeSpec(defDevice(st)).replace === false);
   const mk = section => { const a = []; a.push = t => Array.prototype.push.call(a, { text: t, section }); return a; };
+  const first = stats[0];
 
   if (lang === "r") {
     const sampler = mk("sampler");
-    sampler.push("# Sampler — draw one sample of n from the device");
-    if (wor) sampler.push("# (the device draws without replacement; this code samples with replacement)");
+    sampler.push("# Sampler — draw one sample of n from each device");
+    if (wor) sampler.push("# (a device draws without replacement; this code samples with replacement)");
     sampler.push(`n <- ${cfg.sampleSize}`);
-    sampler.push(drawVec(col, dev, "r"));
+    cfg.pipeline.forEach(st => sampler.push(drawVec(names[st.id], defDevice(st), "r")));
 
     const single = mk("single");
-    single.push("# The statistic for one sample");
-    single.push(`stat <- ${vStat(s, v, "r")}`);
+    if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
+    else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => single.push(`${id} <- ${vStat(s, names[s.variable], "r")}`)); }
 
     const collect = mk("collect");
-    collect.push("# Collect the statistic over many samples");
-    collect.push("N <- 1000");
-    collect.push(`${R} <- numeric(N)`);
-    collect.push("for (i in 1:N) {");
-    collect.push("  " + drawVec(col, dev, "r"));
-    collect.push(`  ${R}[i] <- ${vStat(s, v, "r")}`);
-    collect.push("}");
+    if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
+    else {
+      collect.push(`N <- ${collectN(cfg)}${collectNote(cfg)}`);
+      stats.forEach(({ id }) => collect.push(`${id} <- numeric(N)`));
+      collect.push("for (i in 1:N) {");
+      cfg.pipeline.forEach(st => collect.push("  " + drawVec(names[st.id], defDevice(st), "r")));
+      stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${vStat(s, names[s.variable], "r")}`));
+      collect.push("}");
+    }
 
     const inference = mk("inference");
-    inference.push("# Inference from the sampling distribution");
-    inference.push(`quantile(${R}, c(0.025, 0.975))   # 95% percentile interval`);
-    inference.push(`mean(${R} >= 0)                   # tail proportion — set your cutoff`);
+    if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
+    else {
+      inference.push("# Inference from the sampling distribution");
+      inference.push(`quantile(${first.id}, c(0.025, 0.975))   # 95% percentile interval`);
+      inference.push(`mean(${first.id} >= 0)                   # tail proportion — set your cutoff`);
+    }
     return { sampler, single, collect, inference };
   }
 
@@ -196,29 +220,37 @@ function genCompact(cfg, names, lang) {
   sampler.push("import pandas as pd");
   sampler.push("import numpy as np");
   sampler.push("");
-  sampler.push("# Sampler — draw one sample of n from the device");
-  if (wor) sampler.push("# (the device draws without replacement; this code samples with replacement)");
+  sampler.push("# Sampler — draw one sample of n from each device");
+  if (wor) sampler.push("# (a device draws without replacement; this code samples with replacement)");
   sampler.push(`n = ${cfg.sampleSize}`);
-  sampler.push(`pop_${col} = pd.Series(${vec(labels, "py")})`);
-  sampler.push(drawVec(col, dev, "py"));
+  cfg.pipeline.forEach(st => {
+    const col = names[st.id];
+    sampler.push(`pop_${col} = pd.Series(${vec(outcomeSpec(defDevice(st)).labels, "py")})`);
+    sampler.push(drawVec(col, defDevice(st), "py"));
+  });
 
   const single = mk("single");
-  single.push("# The statistic for one sample");
-  single.push(`stat = ${vStat(s, v, "py")}`);
+  if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
+  else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => single.push(`${id} = ${vStat(s, names[s.variable], "py")}`)); }
 
   const collect = mk("collect");
-  collect.push("# Collect the statistic over many samples");
-  collect.push("N = 1000");
-  collect.push(`${R} = []`);
-  collect.push("for i in range(N):");
-  collect.push("    " + drawVec(col, dev, "py"));
-  collect.push(`    ${R}.append(${vStat(s, v, "py")})`);
+  if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
+  else {
+    collect.push(`N = ${collectN(cfg)}${collectNote(cfg)}`);
+    stats.forEach(({ id }) => collect.push(`${id} = []`));
+    collect.push("for i in range(N):");
+    cfg.pipeline.forEach(st => collect.push("    " + drawVec(names[st.id], defDevice(st), "py")));
+    stats.forEach(({ s, id }) => collect.push(`    ${id}.append(${vStat(s, names[s.variable], "py")})`));
+  }
 
   const inference = mk("inference");
-  inference.push("# Inference from the sampling distribution");
-  inference.push(`${R} = np.array(${R})`);
-  inference.push(`np.quantile(${R}, [0.025, 0.975])   # 95% percentile interval`);
-  inference.push(`(${R} >= 0).mean()                  # tail proportion — set your cutoff`);
+  if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
+  else {
+    inference.push("# Inference from the sampling distribution");
+    inference.push(`${first.id} = np.array(${first.id})`);
+    inference.push(`np.quantile(${first.id}, [0.025, 0.975])   # 95% percentile interval`);
+    inference.push(`(${first.id} >= 0).mean()                  # tail proportion — set your cutoff`);
+  }
   return { sampler, single, collect, inference };
 }
 
@@ -226,7 +258,7 @@ function genCompact(cfg, names, lang) {
 // ║  SPLIT PATH — forks, run-until, or multi-column stats need per-row drawing      ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
-// One device → a single-draw expression (per-row). Length-1 outcome → the literal itself
+// One device → a single-draw expression (per row). Length-1 outcome → the literal itself
 // (deterministic, and sidesteps R's `sample(c(5), 1)` "sample from 1:5" trap).
 function weighted(labels, w, lang) {
   const allEq = w.every(x => x === w[0]);
@@ -284,11 +316,12 @@ function stopPredicate(rule, names, src, lang) {
   return `len(set(${c} for r in ${src})) >= ${n}`;
 }
 
-// R: the trailing expression of compute_stat. Python: its body lines after `sub`.
-function rStatExpr(s, v, v2) {
-  const x = `sub$${v}`;
+// One statistic as a single expression over a data-frame expression `D` (the sample, or a
+// row-subset of it). Mirrors `computeStat`/`rStatExpr`.
+function rStatExpr(s, v, v2, D) {
+  const x = `${D}$${v}`;
   switch (s.fn) {
-    case "count": return "nrow(sub)";
+    case "count": return `nrow(${D})`;
     case "countVal": return `sum(${x} == ${lit(s.target)})`;
     case "proportion": return `mean(${x} == ${lit(s.target)})`;
     case "mean": return `mean(${x})`;
@@ -298,33 +331,44 @@ function rStatExpr(s, v, v2) {
     case "max": return `max(${x})`;
     case "q1": return `as.numeric(quantile(${x}, 0.25, type = 7))`;
     case "q3": return `as.numeric(quantile(${x}, 0.75, type = 7))`;
-    case "slope": return `unname(coef(lm(${v2} ~ ${v}, data = sub))[2])`;
-    case "intercept": return `unname(coef(lm(${v2} ~ ${v}, data = sub))[1])`;
+    case "slope": return `unname(coef(lm(${v2} ~ ${v}, data = ${D}))[2])`;
+    case "intercept": return `unname(coef(lm(${v2} ~ ${v}, data = ${D}))[1])`;
     case "countBetween": return `sum(${regionExpr(x, s, "r")})`;
     case "propBetween": return `mean(${regionExpr(x, s, "r")})`;
     default: return "NA";
   }
 }
-function pyStatExpr(s, v, v2) {
-  const c = `sub[${key(v)}]`;
-  const ret = e => [`    return ${e}`];
+function pyStatExpr(s, v, v2, D) {
+  const c = `${D}[${key(v)}]`;
   switch (s.fn) {
-    case "count": return ret("len(sub)");
-    case "countVal": return ret(`(${c} == ${lit(s.target)}).sum()`);
-    case "proportion": return ret(`(${c} == ${lit(s.target)}).mean()`);
-    case "mean": return ret(`${c}.mean()`);
-    case "sd": return ret(`${c}.std(ddof=0)`);
-    case "median": return ret(`${c}.median()`);
-    case "min": return ret(`${c}.min()`);
-    case "max": return ret(`${c}.max()`);
-    case "q1": return ret(`${c}.quantile(0.25)`);
-    case "q3": return ret(`${c}.quantile(0.75)`);
-    case "slope": return [`    fit = sm.OLS(sub[${key(v2)}], sm.add_constant(sub[${key(v)}])).fit()`, "    return fit.params.iloc[1]"];
-    case "intercept": return [`    fit = sm.OLS(sub[${key(v2)}], sm.add_constant(sub[${key(v)}])).fit()`, "    return fit.params.iloc[0]"];
-    case "countBetween": return ret(`(${regionExpr(c, s, "py")}).sum()`);
-    case "propBetween": return ret(`(${regionExpr(c, s, "py")}).mean()`);
-    default: return ret("float('nan')");
+    case "count": return `len(${D})`;
+    case "countVal": return `(${c} == ${lit(s.target)}).sum()`;
+    case "proportion": return `(${c} == ${lit(s.target)}).mean()`;
+    case "mean": return `${c}.mean()`;
+    case "sd": return `${c}.std(ddof=0)`;
+    case "median": return `${c}.median()`;
+    case "min": return `${c}.min()`;
+    case "max": return `${c}.max()`;
+    case "q1": return `${c}.quantile(0.25)`;
+    case "q3": return `${c}.quantile(0.75)`;
+    case "slope": return `sm.OLS(${D}[${key(v2)}], sm.add_constant(${D}[${key(v)}])).fit().params.iloc[1]`;
+    case "intercept": return `sm.OLS(${D}[${key(v2)}], sm.add_constant(${D}[${key(v)}])).fit().params.iloc[0]`;
+    case "countBetween": return `(${regionExpr(c, s, "py")}).sum()`;
+    case "propBetween": return `(${regionExpr(c, s, "py")}).mean()`;
+    default: return "float('nan')";
   }
+}
+// One stat as a value expression for R `data.frame(...)` — group stats subset df in a block.
+function rStatValue(s, names) {
+  const v = names[s.variable], v2 = names[s.variable2];
+  if (s.condVar) return `{ sub <- df[df$${names[s.condVar]} == ${lit(s.condVal)}, , drop = FALSE]; ${rStatExpr(s, v, v2, "sub")} }`;
+  return rStatExpr(s, v, v2, "df");
+}
+// One stat as the lines that assign into the `out` dict in Python `compute_stats`.
+function pyStatLines(s, id, names) {
+  const v = names[s.variable], v2 = names[s.variable2];
+  if (s.condVar) return [`    sub = df[df[${key(names[s.condVar])}] == ${lit(s.condVal)}]`, `    out[${key(id)}] = ${pyStatExpr(s, v, v2, "sub")}`];
+  return [`    out[${key(id)}] = ${pyStatExpr(s, v, v2, "df")}`];
 }
 
 function genSplit(cfg, names, lang) {
@@ -332,10 +376,9 @@ function genSplit(cfg, names, lang) {
   const until = runMode === "until" && stopRule && stopRule.stageId;
   const cap = until ? "max_draws" : "n";
   const wor = pipeline.some(st => st.branches.some(b => b.device.withReplacement === false));
-  const s = headlineStat(cfg);
-  const v = names[s.variable], v2 = names[s.variable2], cond = names[s.condVar];
-  const needsSm = s.fn === "slope" || s.fn === "intercept";
-  const R = resultName(s);
+  const stats = withIds(plainStats(cfg), names);
+  const needsSm = stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
+  const first = stats[0];
   const mk = section => { const a = []; a.push = t => Array.prototype.push.call(a, { text: t, section }); return a; };
 
   if (lang === "r") {
@@ -366,21 +409,30 @@ function genSplit(cfg, names, lang) {
 
     const single = mk("single");
     single.push(`${cap} <- ${sampleSize}` + (until ? "   # safety cap (max draws)" : "   # sample size"));
-    single.push("compute_stat <- function(df) {");
-    single.push(s.condVar ? `  sub <- df[df$${cond} == ${lit(s.condVal)}, , drop = FALSE]` : "  sub <- df");
-    single.push("  " + rStatExpr(s, v, v2));
-    single.push("}");
-    single.push(`stat <- compute_stat(draw_sample(${cap}))`);
+    if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
+    else {
+      single.push("compute_stats <- function(df) {   # one value per enabled statistic");
+      single.push("  data.frame(");
+      stats.forEach(({ s, id }, i) => single.push(`    ${id} = ${rStatValue(s, names)}${i < stats.length - 1 ? "," : ""}`));
+      single.push("  )");
+      single.push("}");
+      single.push(`stats <- compute_stats(draw_sample(${cap}))`);
+    }
 
     const collect = mk("collect");
-    collect.push("# Collect the statistic over many samples");
-    collect.push("N <- 1000");
-    collect.push(`${R} <- replicate(N, compute_stat(draw_sample(${cap})))`);
+    if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
+    else {
+      collect.push(`N <- ${collectN(cfg)}${collectNote(cfg)}`);
+      collect.push("dist <- do.call(rbind, lapply(1:N, function(i) compute_stats(draw_sample(" + cap + "))))");
+    }
 
     const inference = mk("inference");
-    inference.push("# Inference from the sampling distribution");
-    inference.push(`quantile(${R}, c(0.025, 0.975))   # 95% percentile interval`);
-    inference.push(`mean(${R} >= 0)                   # tail proportion — set your cutoff`);
+    if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
+    else {
+      inference.push("# Inference from the sampling distribution");
+      inference.push(`quantile(dist$${first.id}, c(0.025, 0.975))   # 95% percentile interval`);
+      inference.push(`mean(dist$${first.id} >= 0)                   # tail proportion — set your cutoff`);
+    }
     return { sampler, single, collect, inference };
   }
 
@@ -414,33 +466,40 @@ function genSplit(cfg, names, lang) {
 
   const single = mk("single");
   single.push(`${cap} = ${sampleSize}` + (until ? "   # safety cap (max draws)" : "   # sample size"));
-  single.push("def compute_stat(df):");
-  single.push(s.condVar ? `    sub = df[df[${key(cond)}] == ${lit(s.condVal)}]` : "    sub = df");
-  pyStatExpr(s, v, v2).forEach(t => single.push(t));
-  single.push(`stat = compute_stat(draw_sample(${cap}))`);
+  if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
+  else {
+    single.push("def compute_stats(df):   # one value per enabled statistic");
+    single.push("    out = {}");
+    stats.forEach(({ s, id }) => pyStatLines(s, id, names).forEach(t => single.push(t)));
+    single.push("    return out");
+    single.push(`stats = compute_stats(draw_sample(${cap}))`);
+  }
 
   const collect = mk("collect");
-  collect.push("# Collect the statistic over many samples");
-  collect.push("N = 1000");
-  collect.push(`${R} = [compute_stat(draw_sample(${cap})) for _ in range(N)]`);
+  if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
+  else {
+    collect.push(`N = ${collectN(cfg)}${collectNote(cfg)}`);
+    collect.push(`dist = pd.DataFrame([compute_stats(draw_sample(${cap})) for _ in range(N)])`);
+  }
 
   const inference = mk("inference");
-  inference.push("# Inference from the sampling distribution");
-  inference.push(`${R} = np.array(${R})`);
-  inference.push(`np.quantile(${R}, [0.025, 0.975])   # 95% percentile interval`);
-  inference.push(`(${R} >= 0).mean()                  # tail proportion — set your cutoff`);
+  if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
+  else {
+    inference.push("# Inference from the sampling distribution");
+    inference.push(`np.quantile(dist[${key(first.id)}], [0.025, 0.975])   # 95% percentile interval`);
+    inference.push(`(dist[${key(first.id)}] >= 0).mean()                  # tail proportion — set your cutoff`);
+  }
   return { sampler, single, collect, inference };
 }
 
 // ─── Top-level ────────────────────────────────────────────────────────────────
-// COMPACT when: one stage, no fork, fixed n, and a single-column univariate headline stat.
+// COMPACT when: no fork, fixed n, and every enabled statistic reads a single column.
 function isSimple(cfg) {
   const p = cfg.pipeline || [];
-  if (p.length !== 1) return false;
   if (cfg.runMode === "until") return false;
   const forked = st => st.branches.length > 1 || st.branches.some(b => b.condVar !== null);
   if (p.some(forked)) return false;
-  return singleColumn(headlineStat(cfg));
+  return plainStats(cfg).every(singleColumn);
 }
 
 export function generateCode(cfg, lang) {
