@@ -4,7 +4,7 @@ import { uid, parseCSV } from "./lib/util";
 import { computeStat, statLabel, statKey, NUMERIC_FNS } from "./lib/stats";
 import { colLabel, exprLabel, computeStatRow, evalExpr } from "./lib/expr";
 import { drawSample, stageVarKind, stageOutcomes, mkStage, migratePipeline, rekeyStats, rekeyStopRule, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
-import { encodeConfig, decodeConfig, decodeHidden, shareURL } from "./lib/share";
+import { encodeConfig, decodeConfig, checkHiddenPassword, shareURL } from "./lib/share";
 import { StageCard } from "./components/devices";
 import { CodePanels } from "./components/code";
 import { CopyColumnButton } from "./components/ui";
@@ -35,8 +35,9 @@ export default function App() {
   // Color-blind palette for the code-section symbols (Task E): red→black, green→gray.
   const [cbMode, setCbMode] = useState(false);
   // Hidden (password-veiled) sampler state (Task D). `hidden` marks a veiled sampler;
-  // `revealed` is an in-session unlock; `hiddenData` keeps the obfuscated {salt,data}
-  // so a Reveal can re-check the password without ever storing the plaintext.
+  // `revealed` is an in-session unlock; `hiddenData` keeps the {salt, pw-verifier} so a
+  // Reveal can re-check the password without ever storing the plaintext. The config itself
+  // loads and runs without the password — only revealing the internals is gated.
   const [hidden, setHidden] = useState(false);
   const [revealed, setRevealed] = useState(true);
   const [hiddenData, setHiddenData] = useState(null);
@@ -65,24 +66,20 @@ export default function App() {
     if (config.codeLang) setCodeLang(config.codeLang);
   }, []);
 
-  // One-time URL import (Task C/D). Read ?s=<blob> on mount; a plain blob loads at once,
-  // a hidden blob prompts for the password (Task D) and veils the sampler. Garbled or
-  // unsupported blobs fall back to today's defaults. The URL is then cleaned so editing
-  // and reloading don't keep re-importing the original config.
+  // One-time URL import (Task C/D). Read ?s=<blob> on mount and load the config. A hidden
+  // blob (Task D) loads and RUNS the same way — no password needed to open it — but starts
+  // veiled (`revealed:false`); the stored salt+verifier gate a later Reveal. Garbled or
+  // unsupported blobs fall back to today's defaults. The URL is then cleaned so editing and
+  // reloading don't keep re-importing the original config.
   useEffect(() => {
     const blob = new URLSearchParams(window.location.search).get("s");
     if (!blob) return;
     const decoded = decodeConfig(blob);
     const cleanURL = () => window.history.replaceState(null, "", window.location.pathname);
     if (!decoded) { cleanURL(); return; }
+    applyConfig(decoded.config);
     if (decoded.hidden) {
-      const pw = safePrompt("This sampler is hidden. Enter the password to open it:");
-      const config = pw == null ? null : decodeHidden(decoded.salt, decoded.data, pw);
-      if (!config) { if (pw != null) safeAlert("Incorrect password."); cleanURL(); return; }
-      applyConfig(config);
-      setHidden(true); setRevealed(false); setHiddenData({ salt: decoded.salt, data: decoded.data });
-    } else {
-      applyConfig(decoded.config);
+      setHidden(true); setRevealed(false); setHiddenData({ salt: decoded.salt, pw: decoded.pw });
     }
     cleanURL();
   }, [applyConfig]);
@@ -568,13 +565,13 @@ export default function App() {
   // concealed the device internals are never rendered (so they can't be peeked at in
   // devtools), but the sampler still draws/collects from the in-memory pipeline.
   const concealed = hidden && !revealed;
-  // Re-prompt for the password to unlock editing/inspection this session. Validates
-  // against the stored obfuscated blob, so the plaintext password is never kept around.
+  // Re-prompt for the password to unlock editing/inspection this session. Validates against
+  // the stored verifier, so the plaintext password is never kept around.
   const revealSampler = () => {
     if (!hiddenData) { setRevealed(true); return; }
     const pw = safePrompt("Enter the password to reveal this sampler:");
     if (pw == null) return;
-    if (!decodeHidden(hiddenData.salt, hiddenData.data, pw)) { safeAlert("Incorrect password."); return; }
+    if (!checkHiddenPassword(hiddenData.salt, hiddenData.pw, pw)) { safeAlert("Incorrect password."); return; }
     setRevealed(true);
   };
 

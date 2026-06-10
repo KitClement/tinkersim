@@ -8,6 +8,11 @@ import LZString from "lz-string";
 
 // Bump when the serialized SHAPE changes incompatibly; decode rejects unknown majors.
 const VERSION = 1;
+// Code-known obfuscation key (NOT a secret). A hidden link's config is XOR'd with a key
+// derived from this + the salt so a casual decompress of the URL shows garbage — but the
+// app can always decode it, so the sampler runs for anyone who opens the link. The user's
+// password is never needed to RUN a hidden sampler, only to REVEAL its contents.
+const PEPPER = "tinkersim-veil-v1";
 
 // Pull the shareable fields out of full app state (everything else is derived/ephemeral).
 function pickConfig(state) {
@@ -22,9 +27,11 @@ function pickConfig(state) {
 }
 
 // ─── Hidden (password-veiled) helpers — NOT crypto-grade ──────────────────────
-// Just enough to deter casual peeking at a shared population sampler. The plaintext
-// password never travels; only the salt and the XOR'd blob do. Wrong password ⇒ the
-// inner decompress fails on garbage ⇒ decode returns null ("incorrect password").
+// A hidden link opens and RUNS for anyone (its config is recoverable with the code-known
+// PEPPER, not the password); the password only gates REVEALING the device internals in the
+// UI. So the blob carries the obfuscated config PLUS a password verifier (a salted, stretched
+// hash) — never the plaintext password. Reveal recomputes the verifier and compares. This is
+// just enough to deter casual peeking at a shared population sampler.
 function deriveKey(password, salt) {
   // Cheap, dependency-free key stretch: FNV-style fold of password+salt into a fixed
   // 64-char printable-ASCII keystream. (Deterministic; not a KDF — see note above.)
@@ -48,6 +55,12 @@ function xorCipher(str, key) {
 function randomSalt() {
   return Math.random().toString(36).slice(2, 10);
 }
+// Password verifier stored in a hidden blob so Reveal can check the password without keeping
+// it. A salted, stretched derivation of the password (deterministic ⇒ a correct password
+// reproduces the same string); the plaintext never travels.
+function pwVerifier(password, salt) {
+  return deriveKey(password, salt + "::pw");
+}
 
 // Encode app state → a URL-safe blob string (the value of the ?s= param).
 // opts.password (optional) produces a HIDDEN blob: the config is concealed behind the
@@ -58,9 +71,11 @@ export function encodeConfig(state, opts) {
   let envelope;
   if (password) {
     const salt = randomSalt();
+    // Obfuscate with a code-known key (NOT the password) so the sampler runs for anyone who
+    // opens the link; store a password verifier so Reveal can gate viewing the internals.
     const inner = LZString.compressToBase64(JSON.stringify(config));
-    const data = xorCipher(inner, deriveKey(password, salt));
-    envelope = { v: VERSION, hidden: true, salt, data };
+    const data = xorCipher(inner, deriveKey(PEPPER, salt));
+    envelope = { v: VERSION, hidden: true, salt, pw: pwVerifier(password, salt), data };
   } else {
     envelope = { v: VERSION, hidden: false, config };
   }
@@ -68,10 +83,11 @@ export function encodeConfig(state, opts) {
 }
 
 // Decode a blob → one of:
-//   null                              (absent/garbled/unsupported version)
-//   { hidden:false, config }          (ready to load)
-//   { hidden:true, salt, data }       (caller must prompt for a password, then call
-//                                       decodeHidden(salt, data, password))
+//   null                                  (absent/garbled/unsupported version)
+//   { hidden:false, config }              (ready to load)
+//   { hidden:true, salt, pw, config }     (load+run concealed at once — no password needed;
+//                                          `salt`+`pw` gate a later Reveal via
+//                                          checkHiddenPassword)
 export function decodeConfig(blob) {
   if (!blob) return null;
   let envelope;
@@ -83,23 +99,24 @@ export function decodeConfig(blob) {
   if (!envelope || envelope.v !== VERSION) return null;
   if (envelope.hidden) {
     if (!envelope.salt || !envelope.data) return null;
-    return { hidden: true, salt: envelope.salt, data: envelope.data };
+    // Recover the config with the code-known PEPPER so the sampler runs concealed on open.
+    try {
+      const inner = xorCipher(envelope.data, deriveKey(PEPPER, envelope.salt));
+      const json = LZString.decompressFromBase64(inner);
+      if (!json) return null;
+      const config = JSON.parse(json);
+      if (!config || !Array.isArray(config.pipeline)) return null;
+      return { hidden: true, salt: envelope.salt, pw: envelope.pw, config };
+    } catch { return null; }
   }
   if (!envelope.config || !Array.isArray(envelope.config.pipeline)) return null;
   return { hidden: false, config: envelope.config };
 }
 
-// Reverse a hidden blob with the password. Returns the config, or null on a wrong
-// password (the XOR'd bytes decompress to garbage → null).
-export function decodeHidden(salt, data, password) {
-  try {
-    const inner = xorCipher(data, deriveKey(password, salt));
-    const json = LZString.decompressFromBase64(inner);
-    if (!json) return null;
-    const config = JSON.parse(json);
-    if (!config || !Array.isArray(config.pipeline)) return null;
-    return config;
-  } catch { return null; }
+// Reveal gate: verify a password against the stored verifier. The plaintext password is
+// never stored or transmitted — only this salted, stretched derivation is compared.
+export function checkHiddenPassword(salt, pwStored, password) {
+  return !!salt && !!pwStored && pwVerifier(password, salt) === pwStored;
 }
 
 // Build a full shareable URL for the current page from a blob.
