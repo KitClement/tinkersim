@@ -6,7 +6,7 @@ import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
 import { clampVal, snapValue, snapMeasure, regions } from "../lib/measure";
-import { Sel, ChkLabel, InlineEdit } from "./ui";
+import { Sel, ChkLabel, InlineEdit, NumInput } from "./ui";
 
 // Format a proportion (0–1) for on-plot read-outs — fixed 3 decimals so the plots
 // match the proportion-valued collected statistics (e.g. 0.851, not 85%).
@@ -653,10 +653,17 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   // left → the < side); null for two-sided / range. Drives the one-tail read-out + the linked
   // % box (its proportion is what "tail %" shows in value mode).
   const divDirected = showDivider && !divRange && divDir !== "none";
-  const focusRegion = divRegions
-    ? (divRange ? divRegions.find(r => r.key === "mid")
-      : divDir === "left" ? divRegions.find(r => r.key === "lt")
-      : divDir === "right" ? divRegions.find(r => r.key === "ge") : null)
+  // The focused tail is always inclusive of the cut: right → x ≥ v ("ge", already inclusive);
+  // left → x ≤ v (built here so it matches the generated p-value `mean(vec <= v)`, not the
+  // strict "lt" region). Range → the middle band.
+  const focusRegion = !divRegions ? null
+    : divRange ? divRegions.find(r => r.key === "mid")
+    : divDir === "right" ? divRegions.find(r => r.key === "ge")
+    : divDir === "left" ? (() => {
+        const v = effCuts[0], total = divDomain.values.length;
+        const n = divDomain.values.filter(x => x <= v).length;
+        return { key: "le", lo: -Infinity, hi: v, n, p: total ? n / total : NaN };
+      })()
     : null;
   const shownPct = divBy === "pct" ? divPct : (focusRegion ? focusRegion.p : NaN);
   const divProps = { divOn: showDivider, divCuts: effCuts, onDivChange: onDivDrag,
@@ -842,8 +849,8 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
           )}
           {effCuts.map((v, i) => (
             <label key={i} style={ctrlLbl}>{divRange ? (i === 0 ? "low" : "high") : "at"}
-              <input type="number" step="any" value={parseFloat(Number(v).toFixed(4))}
-                onChange={e => setCut(i, e.target.value)} style={{ ...iSm, width:72, marginLeft:4 }} />
+              <NumInput step="any" value={v} round={4}
+                onChange={n => setCut(i, n)} style={{ ...iSm, width:72, marginLeft:4 }} />
             </label>
           ))}
           {/* Linked percentage: range → middle %, single tail → tail %. Editing it snaps the
@@ -851,9 +858,9 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
               proportion at the current cut (→ p-value). Hidden for a two-sided single divider. */}
           {(divRange || divDir !== "none") && (
             <label style={{ ...ctrlLbl, color: divBy === "pct" ? "#4338ca" : undefined }}>{divRange ? "middle %" : "tail %"}
-              <input type="number" step="any" min="0" max="100"
-                value={isNaN(shownPct) ? "" : parseFloat((shownPct * 100).toFixed(2))}
-                onChange={e => setPct(e.target.value)} style={{ ...iSm, width:64, marginLeft:4 }} />
+              <NumInput step="any" min="0" max="100" round={2}
+                value={isNaN(shownPct) ? "" : shownPct * 100}
+                onChange={n => setPct(n)} style={{ ...iSm, width:64, marginLeft:4 }} />
             </label>
           )}
           <ChkLabel checked={divShowCount} onChange={setDivShowCount} label="# Count" />
@@ -867,8 +874,8 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
         <div style={{ display:"flex", gap:12, marginBottom:10, flexWrap:"wrap", alignItems:"center", fontSize:12 }}>
           {effPts.map((p, i) => (
             <label key={i} style={ctrlLbl}>{i === 0 ? "A" : "B"}
-              <input type="number" step="any" value={parseFloat(Number(p.value).toFixed(4))}
-                onChange={e => setRulerPt(i, e.target.value)} style={{ ...iSm, width:72, marginLeft:4 }} />
+              <NumInput step="any" value={p.value} round={4}
+                onChange={n => setRulerPt(i, n)} style={{ ...iSm, width:72, marginLeft:4 }} />
               {p.spec && <span title="anchored — follows this measure as the data changes"
                 style={{ marginLeft:4, padding:"1px 5px", borderRadius:4, background:"#ccfbf1", color:"#0f766e", fontWeight:700, fontSize:11 }}>◎ {p.label}</span>}
             </label>

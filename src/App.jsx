@@ -6,9 +6,9 @@ import { colLabel, exprLabel, computeStatRow, evalExpr } from "./lib/expr";
 import { drawSample, stageVarKind, stageOutcomes, mkStage, migratePipeline, rekeyStats, rekeyStopRule, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
 import { encodeConfig, decodeConfig, checkHiddenPassword, shareURL } from "./lib/share";
 import { StageCard } from "./components/devices";
-import { CodeControls, CodeBeside } from "./components/code";
+import { CodeControls, CodeBeside, CodeIntegrated } from "./components/code";
 import { generateCode } from "./lib/codegen";
-import { CopyColumnButton } from "./components/ui";
+import { CopyColumnButton, NumInput } from "./components/ui";
 import { EDAPlot, SampleResults, StatDefiner, DerivedBuilder, DistributionPlot, CollectTable } from "./components/plots";
 import prismLogo from "./assets/prism-logo.svg";
 import prismLogoCb from "./assets/prism-logo-cb.svg";
@@ -723,8 +723,8 @@ export default function App() {
             </select>
             {runMode === "fixed" ? (
               <label style={ctrlLbl}>n =
-                <input type="number" value={sampleSize} min={1} max={10000}
-                  onChange={e => changeSampleSize(e.target.value)}
+                <NumInput value={sampleSize} min={1} max={10000} round={0}
+                  onChange={v => changeSampleSize(v)}
                   style={{ ...iSm, width:60, marginLeft:4 }} />
               </label>
             ) : (
@@ -747,14 +747,14 @@ export default function App() {
                 )}
                 {stopRule && (stopRule.kind === "count" || stopRule.kind === "distinct") && (
                   <label style={ctrlLbl}>N =
-                    <input type="number" min={1} value={stopRule.n || 1} disabled={sampling}
-                      onChange={e => changeStopRule({ n: Math.max(1, parseInt(e.target.value) || 1) })}
+                    <NumInput min={1} value={stopRule.n || 1} disabled={sampling} round={0}
+                      onChange={v => changeStopRule({ n: Math.max(1, Math.round(v) || 1) })}
                       style={{ ...iSm, width:48, marginLeft:4 }} />
                   </label>
                 )}
                 <label style={ctrlLbl} title="safety cap: stop after at most this many draws">max
-                  <input type="number" value={sampleSize} min={1} max={100000}
-                    onChange={e => changeSampleSize(e.target.value)}
+                  <NumInput value={sampleSize} min={1} max={100000} round={0}
+                    onChange={v => changeSampleSize(v)}
                     style={{ ...iSm, width:60, marginLeft:4 }} />
                 </label>
               </>
@@ -821,8 +821,8 @@ export default function App() {
           <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>📈 Collect Statistics</span>
           <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <label style={ctrlLbl}>Collect
-              <input type="number" value={batchSize} min={1} max={100000}
-                onChange={e => setBatchSize(Math.max(1, parseInt(e.target.value) || 1))}
+              <NumInput value={batchSize} min={1} max={100000} round={0}
+                onChange={v => setBatchSize(Math.max(1, Math.round(v) || 1))}
                 style={{ ...iSm, width:70, marginLeft:4 }} />
               samples
             </label>
@@ -905,6 +905,14 @@ export default function App() {
                 rowIds={collectRows.map(r => r._id)} selectedIds={collectSelectedIds} onToggleSelect={toggleCollectId}
                 onDivider={codeLang === "off" ? undefined : onCollectDivider} />
             </CodeBeside>
+          </div>
+        )}
+
+        {/* Integrated program (Task E) — the whole simulation as one script, with the section
+            symbol in the gutter (★ sampler / ● statistic / ▲ loop / ■ inference). */}
+        {code && (
+          <div style={{ borderTop:"1px solid #f0f0f0", paddingTop:12, marginTop:4 }}>
+            <CodeIntegrated lines={code.integrated} cbMode={cbMode} />
           </div>
         )}
       </div>

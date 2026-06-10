@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnPlus, btnArr } from "../lib/styles";
 import { COLORS, clamp, uid, nextItemLabel } from "../lib/util";
-import { InlineEdit, PasteButton, ReplacementToggle, RangeInput } from "./ui";
+import { InlineEdit, PasteButton, ReplacementToggle, RangeInput, NumInput } from "./ui";
 import { mkSpinner, mkStacks, mkMixer, stageOutcomes } from "../lib/sampling";
 
 // ── Spinner slice math: every helper returns a fresh slices array that sums to 100 ──
@@ -547,8 +547,8 @@ function StacksDevice({ device, onChange, animState }) {
               <InlineEdit value={it.label}
                 onChange={v => { const items = [...device.items]; items[i] = { ...items[i], label:v }; onChange({ ...device, items }); }} />
             </div>
-            <input type="number" value={it.count} min={0} max={MAX_CT}
-              onChange={e => { const items = [...device.items]; items[i] = { ...items[i], count:parseInt(e.target.value) || 0 }; onChange({ ...device, items }); }}
+            <NumInput value={it.count} min={0} max={MAX_CT} round={0}
+              onChange={v => { const items = [...device.items]; items[i] = { ...items[i], count:Math.max(0, Math.round(v)) }; onChange({ ...device, items }); }}
               style={{ ...iSm, width:42 }} />
             <button onClick={() => onChange({ ...device, items:device.items.filter((_, j) => j !== i) })} style={btnX}>×</button>
           </div>

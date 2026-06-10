@@ -105,6 +105,30 @@ function RangeInput({ onApply, onClose }) {
   );
 }
 
+// A number input that keeps a local text buffer while focused, so the last digit CAN be
+// deleted (the box goes empty) without snapping back. An empty/invalid box is remembered —
+// `onChange` only fires for a parseable number — and on blur the box reverts to the live
+// `value`. External changes (e.g. a drag moving a divider cut) sync in only when not editing.
+// `round` (digits) controls display rounding; min/max/step/style pass straight through.
+function NumInput({ value, onChange, round, style, ...rest }) {
+  const fmt = v => (v == null || v === "" || isNaN(v) ? "" : String(round != null ? parseFloat(Number(v).toFixed(round)) : v));
+  const [text, setText] = useState(() => fmt(value));
+  const [editing, setEditing] = useState(false);
+  useEffect(() => { if (!editing) setText(fmt(value)); }, [value, editing]);
+  const handle = e => {
+    const t = e.target.value;
+    setText(t);                       // allow empty / a partial number while typing
+    if (t.trim() === "") return;      // remember the prior value — don't propagate the blank
+    const n = parseFloat(t);
+    if (!isNaN(n)) onChange(n);
+  };
+  return (
+    <input type="number" value={text} onChange={handle} style={style}
+      onFocus={() => setEditing(true)}
+      onBlur={() => { setEditing(false); setText(fmt(value)); }} {...rest} />
+  );
+}
+
 function ChkLabel({ checked, onChange, label }) {
   return (
     <label style={{ display:"flex", alignItems:"center", gap:4, cursor:"pointer", color:"#555" }}>
@@ -143,4 +167,4 @@ function CopyColumnButton({ header, rows }) {
   );
 }
 
-export { Sel, InlineEdit, ReplacementToggle, PasteButton, RangeInput, ChkLabel, CopyColumnButton };
+export { Sel, InlineEdit, ReplacementToggle, PasteButton, RangeInput, ChkLabel, CopyColumnButton, NumInput };

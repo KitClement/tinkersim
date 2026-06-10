@@ -62,9 +62,11 @@ dependency-light and self-contained (no chart lib, no state lib).
     `BranchConditionEditor`), `SpinnerDevice`, `StacksDevice`, `MixerDevice`, `DeviceCard`.
   - `code.jsx` — Task E UI: `CodeControls` (page-header off/R/Python + color-blind toggle),
     `CodeBox` (a panel with a white→section-color gradient header carrying the section symbol
-    as a white watermark), and `CodeBeside` (lays a tool's content next to its code box,
-    stacking on narrow widths).
-  - `ui.jsx` — small shared widgets (`Sel`, `InlineEdit`, `ReplacementToggle`, …).
+    as a white watermark), `CodeBeside` (lays a tool's content next to its code box, stacking
+    on narrow widths), and `CodeIntegrated` (the whole program as one script with the section
+    symbol in a color-coded gutter where line numbers would go — see codegen's `genIntegrated`).
+  - `ui.jsx` — small shared widgets (`Sel`, `InlineEdit`, `ReplacementToggle`, `ChkLabel`,
+    `NumInput` — a number field whose last digit can be cleared without snapping back, …).
 
 ## Architecture (current)
 The app has three workflow stages, top to bottom:
@@ -126,8 +128,11 @@ branch devices' declared outcomes.
   Single sample ● → Sample Results, For-loop ▲ → Collect table, Inference ■ → Collect plot),
   wrapping to stacked (code below) on narrow widths. The `CodeBox` header is a white→section-
   color gradient with the section symbol as a large white watermark. See "Hard-won
-  constraints" #7. (`generateCode` still returns an `integrated` array — currently unused by
-  the distributed layout, kept for a possible single-program view.)
+  constraints" #7. After the Collect section, `CodeIntegrated` renders `generateCode`'s
+  `integrated` array — the whole simulation as one script with each line's section symbol in
+  a color-coded gutter (the compact loop shows ★ red draw + ● orange stat lines nested inside
+  the ▲ green for-loop). `genIntegrated` builds that interleaving directly (reusing the same
+  `drawVec`/`vStat`/`compactInfLines` helpers, so it can't drift from the panels).
 
 ### The unified `Plot` primitive
 `Plot` (in `plots.jsx`) is the single plotting component behind EDA, Sample Results, and
@@ -254,11 +259,12 @@ framing (`{ variable, cuts, range, dir, by, pct }`) via an `onDivider` callback,
 `DistributionPlot` maps the X header back to its tracked-stat id, and `App` lifts it into
 `dividerState` (a deduped setter prevents a re-render loop) → the `generateCode` cfg.
 `codegen.js`'s `dividerInfo`/`dividerExprs` then emit, over the matched statistic's result
-vector, one of: **p-value** `mean(vec >= v)` / `mean(vec < v)` (tail + value), **critical
-value** `quantile(vec, q, type=7)` (tail + %), **band proportion** `mean(vec >= lo & vec <= hi)`
-(range + value), or **CI** `quantile(vec, c(qlo, qhi))` (range + %); two-sided shows both
-proportions. Falls back to the `>= 0` placeholder when the divider is off or on a non-emitted
-(derived) column.
+vector, one of: **p-value** `mean(vec >= v)` (right) / `mean(vec <= v)` (left — the focused
+tail is always inclusive of the cut) (tail + value), **critical value** `quantile(vec, q,
+type=7)` (tail + %), **band proportion** `mean(vec >= lo & vec <= hi)` (range + value), or **CI**
+`quantile(vec, c(qlo, qhi))` (range + %); two-sided shows both `>= v` / `< v` proportions
+(disjoint). The on-plot left-tail read-out is built inclusively to match. Falls back to the
+`>= 0` placeholder when the divider is off or on a non-emitted (derived) column.
 
 ## Conventions
 - Keep the app dependency-light. Don't add a UI framework or state library without reason.

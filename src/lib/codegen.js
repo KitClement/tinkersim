@@ -141,6 +141,7 @@ function dividerExprs(vec, div, lang) {
   const q = frac => (R ? `quantile(${vec}, ${frac}, type = 7)` : `np.quantile(${vec}, ${frac})`);
   const ge = v => (R ? `mean(${vec} >= ${v})` : `(${vec} >= ${v}).mean()`);
   const lt = v => (R ? `mean(${vec} < ${v})` : `(${vec} < ${v}).mean()`);
+  const le = v => (R ? `mean(${vec} <= ${v})` : `(${vec} <= ${v}).mean()`); // left tail is inclusive
   const band = (a, b) => (R ? `mean(${vec} >= ${a} & ${vec} <= ${b})` : `((${vec} >= ${a}) & (${vec} <= ${b})).mean()`);
   if (div.range) {
     if (div.by === "pct") {
@@ -156,7 +157,7 @@ function dividerExprs(vec, div, lang) {
       return [`${q(frac)}   # critical value (${pctLabel(div.pct)} ${div.dir} tail)`];
     }
     const v = numLit(div.cuts[0]);
-    return div.dir === "right" ? [`${ge(v)}   # p-value (upper tail)`] : [`${lt(v)}   # p-value (lower tail)`];
+    return div.dir === "right" ? [`${ge(v)}   # p-value (upper tail)`] : [`${le(v)}   # p-value (lower tail)`];
   }
   const v = numLit(div.cuts[0]);
   return [`${ge(v)}   # P(stat >= ${v})`, `${lt(v)}   # P(stat < ${v})`];
@@ -254,16 +255,7 @@ function genCompact(cfg, names, lang) {
     }
 
     const inference = mk("inference");
-    const divR = dividerInfo(cfg, stats);
-    if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
-    else if (divR) {
-      inference.push("# Inference from the sampling distribution (divider)");
-      dividerExprs(divR.id, divR, "r").forEach(t => inference.push(t));
-    } else {
-      inference.push("# Inference from the sampling distribution");
-      inference.push(`quantile(${first.id}, c(0.025, 0.975))   # 95% percentile interval`);
-      inference.push(`mean(${first.id} >= 0)                   # tail proportion — set your cutoff`);
-    }
+    compactInfLines(cfg, stats, "r").forEach(([t]) => inference.push(t));
     return { sampler, single, collect, inference };
   }
 
@@ -296,18 +288,7 @@ function genCompact(cfg, names, lang) {
   }
 
   const inference = mk("inference");
-  const divP = dividerInfo(cfg, stats);
-  if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
-  else if (divP) {
-    inference.push("# Inference from the sampling distribution (divider)");
-    inference.push(`${divP.id} = np.array(${divP.id})`);
-    dividerExprs(divP.id, divP, "py").forEach(t => inference.push(t));
-  } else {
-    inference.push("# Inference from the sampling distribution");
-    inference.push(`${first.id} = np.array(${first.id})`);
-    inference.push(`np.quantile(${first.id}, [0.025, 0.975])   # 95% percentile interval`);
-    inference.push(`(${first.id} >= 0).mean()                  # tail proportion — set your cutoff`);
-  }
+  compactInfLines(cfg, stats, "py").forEach(([t]) => inference.push(t));
   return { sampler, single, collect, inference };
 }
 
@@ -567,17 +548,74 @@ function isSimple(cfg) {
   return plainStats(cfg).every(singleColumn);
 }
 
+// The inference lines for the compact path over the collected vectors, as [text, section]
+// pairs (shared by the distributed panel and the integrated view so they can't diverge).
+function compactInfLines(cfg, stats, lang) {
+  const out = [], first = stats[0], div = dividerInfo(cfg, stats);
+  if (!first) return [["# Enable a statistic, then collect samples, to do inference", "inference"]];
+  out.push([`# Inference from the sampling distribution${div ? " (divider)" : ""}`, "inference"]);
+  if (lang === "r") {
+    if (div) dividerExprs(div.id, div, "r").forEach(t => out.push([t, "inference"]));
+    else {
+      out.push([`quantile(${first.id}, c(0.025, 0.975))   # 95% percentile interval`, "inference"]);
+      out.push([`mean(${first.id} >= 0)                   # tail proportion — set your cutoff`, "inference"]);
+    }
+  } else {
+    const v = div ? div.id : first.id;
+    out.push([`${v} = np.array(${v})`, "inference"]);
+    if (div) dividerExprs(div.id, div, "py").forEach(t => out.push([t, "inference"]));
+    else {
+      out.push([`np.quantile(${first.id}, [0.025, 0.975])   # 95% percentile interval`, "inference"]);
+      out.push([`(${first.id} >= 0).mean()                  # tail proportion — set your cutoff`, "inference"]);
+    }
+  }
+  return out;
+}
+
+// One runnable program with per-line `section` tags driving the color-coded gutter. In the
+// compact case the loop body's draws (★ red) and statistics (● orange) sit INSIDE the green
+// (▲) for-loop; the split case lays the function defs / loop / inference out in order.
+function genIntegrated(cfg, names, lang) {
+  const stats = withIds(plainStats(cfg), names);
+  const L = [], push = (text, section) => L.push({ text, section });
+  if (isSimple(cfg)) {
+    const ind = lang === "r" ? "  " : "    ";
+    const wor = cfg.pipeline.some(st => outcomeSpec(defDevice(st)).replace === false);
+    if (lang === "py") { push("import pandas as pd", "sampler"); push("import numpy as np", "sampler"); push("", "sampler"); }
+    push("# Set up the sampler", "sampler");
+    if (wor) push("# (a device draws without replacement; this code samples with replacement)", "sampler");
+    push(lang === "r" ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`, "sampler");
+    if (lang === "py") cfg.pipeline.forEach(st => push(`pop_${names[st.id]} = pd.Series(${vec(outcomeSpec(defDevice(st)).labels, "py")})`, "sampler"));
+    if (!stats.length) { push("# Enable a statistic (click a value on the plot) to collect a distribution", "collect"); return L; }
+    push(lang === "r" ? `N <- ${collectN(cfg)}${collectNote(cfg)}` : `N = ${collectN(cfg)}${collectNote(cfg)}`, "collect");
+    stats.forEach(({ id }) => push(lang === "r" ? `${id} <- numeric(N)` : `${id} = []`, "collect"));
+    push(lang === "r" ? "for (i in 1:N) {" : "for i in range(N):", "collect");
+    cfg.pipeline.forEach(st => push(ind + drawVec(names[st.id], defDevice(st), lang), "sampler"));
+    stats.forEach(({ s, id }) => {
+      const e = vStat(s, names[s.variable], lang);
+      push(ind + (lang === "r" ? `${id}[i] <- ${e}` : `${id}.append(${e})`), "single");
+    });
+    if (lang === "r") push("}", "collect");
+    push("", "inference");
+    compactInfLines(cfg, stats, lang).forEach(([t, sec]) => push(t, sec));
+    return L;
+  }
+  // Split: the function defs / loop / inference already carry the right section tags; stitch
+  // them, dropping the redundant single-sample demo line (`stats <- compute_stats(...)`).
+  const secs = genSplit(cfg, names, lang);
+  const demo = /^stats\s*(<-|=)\s*compute_stats/;
+  ["sampler", "single", "collect", "inference"].forEach((k, i) => {
+    if (i > 0) push("", secs[k][0] ? secs[k][0].section : k);
+    secs[k].forEach(ln => { if (!demo.test(ln.text.trim())) push(ln.text, ln.section); });
+  });
+  return L;
+}
+
 export function generateCode(cfg, lang) {
   const language = lang === "python" ? "py" : "r";
   const names = buildNames(cfg.pipeline || []);
   const { sampler, single, collect, inference } =
     isSimple(cfg) ? genCompact(cfg, names, language) : genSplit(cfg, names, language);
-  // Integrated = the four sections stitched into one program (kept for a possible single-program
-  // view; the distributed layout uses the four sections directly).
-  const integrated = [];
-  [sampler, single, collect, inference].forEach((sec, i) => {
-    if (i > 0) integrated.push({ text: "", section: sec[0] ? sec[0].section : "sampler" });
-    sec.forEach(ln => integrated.push(ln));
-  });
+  const integrated = genIntegrated(cfg, names, language);
   return { sampler, single, collect, inference, integrated };
 }

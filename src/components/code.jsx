@@ -60,6 +60,45 @@ export function CodeBox({ sectionId, lines, cbMode }) {
   );
 }
 
+// The integrated program: one runnable script with the section symbol in the gutter where a
+// line number would go, color-coded by origin. Consecutive same-section lines read as a block,
+// so the compact loop shows ★ (red) draw + ● (orange) statistic lines nested inside the ▲
+// (green) for-loop. Blank lines get no glyph.
+export function CodeIntegrated({ lines, cbMode }) {
+  const text = lines.map(l => l.text).join("\n");
+  return (
+    <div style={{ border:"1px solid #e7e7ee", borderRadius:10, overflow:"hidden", background:"#fff" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 10px", background:"#f7f7fb", borderBottom:"1px solid #eee", flexWrap:"wrap" }}>
+        <span style={{ fontSize:13, fontWeight:700, color:"#2c3e50" }}>Integrated program</span>
+        <div style={{ display:"flex", gap:10, marginLeft:4, flexWrap:"wrap" }}>
+          {CODE_SECTIONS.map(s => (
+            <span key={s.id} style={{ display:"flex", alignItems:"center", gap:3, fontSize:10.5, color:"#777" }}>
+              <Glyph symbol={s.symbol} color={sectionColor(s, cbMode)} size={11} /> {s.title}
+            </span>
+          ))}
+        </div>
+        <div style={{ marginLeft:"auto" }}><CopyButton text={text} /></div>
+      </div>
+      <div style={{ fontFamily:MONO, fontSize:11.5, lineHeight:1.55, background:"#fbfbfd", overflowX:"auto" }}>
+        {lines.map((l, i) => {
+          const sec = SECT[l.section] || CODE_SECTIONS[0];
+          const color = sectionColor(sec, cbMode);
+          const blank = !l.text.trim();
+          return (
+            <div key={i} style={{ display:"flex", alignItems:"stretch", minHeight:19 }}>
+              <div style={{ width:22, flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center",
+                background: blank ? "transparent" : color + "1f", borderRight:"1px solid #eef0f4" }}>
+                {blank ? null : <Glyph symbol={sec.symbol} color={color} size={10} />}
+              </div>
+              <pre style={{ margin:0, padding:"0 10px", color:"#24292e", whiteSpace:"pre" }}>{l.text || " "}</pre>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Lay a tool's content beside its code panel; wraps to stacked (code directly below) on
 // narrow screens via flex-wrap. When `lines` is absent (code off) the tool spans full width
 // with no layout change at all.
