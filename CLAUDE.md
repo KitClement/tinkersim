@@ -178,11 +178,14 @@ Both are off by default and gated to plots where they make sense.
     **tail** (`◂ Left | Both | Right ▸`) — an arrow highlights the focused tail and only its
     proportion shows. The value box and a linked **tail/middle proportion** box (0–1, matching
     the tool's proportion convention) are two ends of one relationship (`divBy`): editing the
-    value (drag/type) reads a probability; editing the proportion snaps the cut(s) to that
-    empirical **quantile** (reusing `stats.js` `quantile`, type-7 — constraint #5; on a discrete
-    distribution a band of targets can map to the same achievable cut — that plateau is the
-    honest empirical quantile, not a bug). Toggling Range or direction resets `divBy` to
-    `"value"`. `divPct` is stored as a fraction; generated-code comments keep conventional `%`.
+    value (drag/type) reads a probability; editing the proportion snaps the cut(s) to the
+    **achievable empirical cut nearest the target** (`measure.js` `nearestCut`: the distinct
+    data value whose directional proportion — `ge`/`le` tail, `lt`/`gt` middle-excluded — is
+    closest to the target). This *minimizes coverage error* on a discrete distribution, where
+    a plain quantile snaps to a tie cluster and overshoots (e.g. a 95% CI lands ~0.94 vs type-7's
+    ~0.976); the residual plateaus are inherent to coarse data. Toggling Range or direction
+    resets `divBy` to `"value"`. `divPct` is stored as a fraction; generated-code comments keep
+    conventional `%`.
     On the Collect plot this drives the generated **inference**: tail+value → p-value, tail+prop
     → critical value, range+value → band proportion, range+prop → CI (see codegen note below).
 - **Ruler** — three mechanics, each gated to its plot type: *axis distance* (two snappable
@@ -263,11 +266,13 @@ framing (`{ variable, cuts, range, dir, by, pct }`) via an `onDivider` callback,
 `dividerState` (a deduped setter prevents a re-render loop) → the `generateCode` cfg.
 `codegen.js`'s `dividerInfo`/`dividerExprs` then emit, over the matched statistic's result
 vector, one of: **p-value** `mean(vec >= v)` (right) / `mean(vec <= v)` (left — the focused
-tail is always inclusive of the cut) (tail + value), **critical value** `quantile(vec, q,
-type=7)` (tail + %), **band proportion** `mean(vec >= lo & vec <= hi)` (range + value), or **CI**
-`quantile(vec, c(qlo, qhi))` (range + %); two-sided shows both `>= v` / `< v` proportions
-(disjoint). The on-plot left-tail read-out is built inclusively to match. Falls back to the
-`>= 0` placeholder when the divider is off or on a non-emitted (derived) column.
+tail is always inclusive of the cut) (tail + value), **critical value** (tail + %) and **CI**
+(range + %) as the `nearestCut` search — `xs[which.min(abs(sapply(xs, …) - t))]` (R) /
+`xs[np.argmin(np.abs(… - t))]` (Python), the empirical cut minimizing coverage error to match
+the tool — **band proportion** `mean(vec >= lo & vec <= hi)` (range + value); two-sided shows
+both `>= v` / `< v` proportions (disjoint). The on-plot left-tail read-out is built inclusively
+to match. Falls back to the `>= 0` placeholder when the divider is off or on a non-emitted
+(derived) column.
 
 ## Conventions
 - Keep the app dependency-light. Don't add a UI framework or state library without reason.

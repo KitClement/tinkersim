@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
 import { COLORS, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
-import { numericSummary, lsFit, statLabel, statKey, computeStat, quantile, FN_OPTS } from "../lib/stats";
+import { numericSummary, lsFit, statLabel, statKey, computeStat, FN_OPTS } from "../lib/stats";
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
-import { clampVal, snapValue, snapMeasure, regions } from "../lib/measure";
+import { clampVal, snapValue, snapMeasure, regions, nearestCut } from "../lib/measure";
 import { Sel, ChkLabel, InlineEdit, NumInput } from "./ui";
 
 // Format a proportion (0–1) for on-plot read-outs — fixed 3 decimals so the plots
@@ -620,12 +620,12 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
   if (showDivider) {
     const { lo, hi } = divDomain, want = divRange ? 2 : 1;
     if (pctActive && divDomain.values.length) {
-      const sorted = [...divDomain.values].sort((a, b) => a - b), m = divPct;
-      const cut = q => clampVal(quantile(sorted, q), lo, hi);
-      // Empirical quantiles for the target proportion: range → symmetric middle band;
-      // single → the upper (right) or lower (left) tail. Matches measure.js `regions`.
-      effCuts = divRange ? [cut((1 - m) / 2), cut(1 - (1 - m) / 2)]
-        : [cut(divDir === "right" ? 1 - m : m)];
+      const vals = divDomain.values, m = divPct, snap = (t, side) => clampVal(nearestCut(vals, t, side), lo, hi);
+      // Snap to the achievable empirical cut nearest the target proportion (minimizing coverage
+      // error on a discrete distribution): range → the symmetric middle band's excluded tails;
+      // single → the upper (right, x≥v) or lower (left, x≤v) tail. Matches measure.js `regions`.
+      effCuts = divRange ? [snap((1 - m) / 2, "lt"), snap((1 - m) / 2, "gt")]
+        : [snap(m, divDir === "right" ? "ge" : "le")];
     } else {
       const inRange = v => v >= lo && v <= hi;
       effCuts = (divCuts.length === want && divCuts.every(inRange))

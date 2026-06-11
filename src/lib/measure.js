@@ -51,6 +51,30 @@ export function snapMeasure(v, candidates, pxPerUnit, cursorY = null, threshold 
   return best;
 }
 
+// Snap a target proportion to the **achievable** empirical cut: the distinct data value whose
+// directional proportion is closest to `target`, minimizing coverage error on a discrete
+// sampling distribution (where the achievable coverages are coarse and a plain quantile snaps
+// to a tie cluster, overshooting). `side` matches the divider's regions:
+//   "ge" P(x≥v) / "le" P(x≤v)  → tail cuts (critical value)
+//   "lt" P(x<v) / "gt" P(x>v)  → the excluded side of a middle band's lower / upper cut
+export function nearestCut(values, target, side) {
+  const N = values.length;
+  if (!N) return NaN;
+  const prop = v => {
+    let c = 0;
+    for (const x of values) {
+      if (side === "ge" ? x >= v : side === "le" ? x <= v : side === "lt" ? x < v : x > v) c++;
+    }
+    return c / N;
+  };
+  let best = values[0], bestErr = Infinity;
+  for (const v of new Set(values)) {
+    const e = Math.abs(prop(v) - target);
+    if (e < bestErr) { bestErr = e; best = v; }
+  }
+  return best;
+}
+
 // Split `values` (finite plotted numbers) into proportion regions about `cuts`.
 //   cuts = [v]      → [{<v}, {≥v}]                using x < v / x ≥ v
 //   cuts = [lo, hi] → [{<lo}, {lo–hi}, {>hi}]     using x < lo / lo ≤ x ≤ hi / x > hi

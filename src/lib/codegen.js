@@ -132,29 +132,45 @@ function dividerInfo(cfg, stats) {
 }
 // The inference line(s) a divider implies over a vector/Series expression `vec`, by mode:
 //   range + value → band proportion P(lo ≤ x ≤ hi)
-//   range + pct   → CI: the symmetric middle-% quantiles (type-7, matching the tool)
+//   range + pct   → CI: each bound is the data value with ~(1-m)/2 of the distribution beyond
+//                   it (the achievable empirical cut nearest the target — see measure.js
+//                   `nearestCut`; this minimizes coverage error on a discrete distribution)
 //   tail  + value → one-sided p-value P(x ≥ v) / P(x < v)
-//   tail  + pct   → critical value: the tail quantile
+//   tail  + pct   → critical value: the data value with ~the target proportion in the tail
 //   two-sided     → both proportions P(x ≥ v) / P(x < v)
 function dividerExprs(vec, div, lang) {
   const R = lang === "r";
-  const q = frac => (R ? `quantile(${vec}, ${frac}, type = 7)` : `np.quantile(${vec}, ${frac})`);
   const ge = v => (R ? `mean(${vec} >= ${v})` : `(${vec} >= ${v}).mean()`);
   const lt = v => (R ? `mean(${vec} < ${v})` : `(${vec} < ${v}).mean()`);
   const le = v => (R ? `mean(${vec} <= ${v})` : `(${vec} <= ${v}).mean()`); // left tail is inclusive
   const band = (a, b) => (R ? `mean(${vec} >= ${a} & ${vec} <= ${b})` : `((${vec} >= ${a}) & (${vec} <= ${b})).mean()`);
+  // The "value v in the data closest to a target tail proportion" search (matches nearestCut).
+  // `op` is the directional comparison whose proportion we drive to `target`.
+  const nearest = (op, target) => R
+    ? `xs[which.min(abs(sapply(xs, function(v) mean(${vec} ${op} v)) - ${target}))]`
+    : `xs[np.argmin(np.abs(np.array([(${vec} ${op} v).mean() for v in xs]) - ${target}))]`;
+  const xsLine = R ? `xs <- sort(unique(${vec}))` : `xs = np.unique(${vec})`;
+
   if (div.range) {
     if (div.by === "pct") {
-      const lo = numLit((1 - div.pct) / 2), hi = numLit(1 - (1 - div.pct) / 2);
-      return [`${q(R ? `c(${lo}, ${hi})` : `[${lo}, ${hi}]`)}   # ${pctLabel(div.pct)} confidence interval`];
+      const t = numLit((1 - div.pct) / 2);
+      // CI: lower bound leaves ~t below it, upper bound leaves ~t above it.
+      if (R) return [xsLine,
+        `lo <- ${nearest("<", t)}`,
+        `hi <- ${nearest(">", t)}`,
+        `c(lo, hi)   # ~${pctLabel(div.pct)} confidence interval`];
+      return [xsLine,
+        `lo = ${nearest("<", t)}`,
+        `hi = ${nearest(">", t)}`,
+        `[lo, hi]   # ~${pctLabel(div.pct)} confidence interval`];
     }
     const a = numLit(Math.min(div.cuts[0], div.cuts[1])), b = numLit(Math.max(div.cuts[0], div.cuts[1]));
     return [`${band(a, b)}   # P(${a} <= stat <= ${b})`];
   }
   if (div.dir === "left" || div.dir === "right") {
     if (div.by === "pct") {
-      const frac = numLit(div.dir === "right" ? 1 - div.pct : div.pct);
-      return [`${q(frac)}   # critical value (${pctLabel(div.pct)} ${div.dir} tail)`];
+      const t = numLit(div.pct), op = div.dir === "right" ? ">=" : "<=";
+      return [xsLine, `${nearest(op, t)}   # critical value (~${pctLabel(div.pct)} ${div.dir} tail)`];
     }
     const v = numLit(div.cuts[0]);
     return div.dir === "right" ? [`${ge(v)}   # p-value (upper tail)`] : [`${le(v)}   # p-value (lower tail)`];
