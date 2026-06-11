@@ -132,10 +132,10 @@ function dividerInfo(cfg, stats) {
 }
 // The inference line(s) a divider implies over a vector/Series expression `vec`, by mode:
 //   range + value → band proportion P(lo ≤ x ≤ hi)
-//   range + pct   → CI: the smallest central band covering ≥ the target — a conservative
-//                   interval (covers at least the set proportion). Walk the nested central
-//                   bands (start at the median, extend the larger excluded tail) and stop at
-//                   the first that reaches the target (matches measure.js `conservativeBand`).
+//   range + pct   → CI: the middle-m percentile interval `quantile(c((1-m)/2, 1-(1-m)/2))`.
+//                   A plain percentile interval for the set %, NOT the conservative band the
+//                   tool draws — the student-facing code stays simple (won't match the visual
+//                   band exactly on discrete data, which is fine).
 //   tail  + value → one-sided p-value P(x ≥ v) / P(x < v)
 //   tail  + pct   → critical value: the (1-m) percentile (right) / m percentile (left)
 //   two-sided     → both proportions P(x ≥ v) / P(x < v)
@@ -150,24 +150,11 @@ function dividerExprs(vec, div, lang) {
 
   if (div.range) {
     if (div.by === "pct") {
-      const m = numLit(div.pct);
-      // CI: widen the central band until it covers ≥ the target (conservative — see
-      // `conservativeBand`). The plot shows the band's actual (≥ target) coverage; this code
-      // reproduces the same band.
-      if (R) return [
-        `xs <- sort(unique(${vec}))`,
-        `i <- which(cumsum(table(factor(${vec}, xs))) >= length(${vec}) / 2)[1]; j <- i`,
-        `while (mean(${vec} >= xs[i] & ${vec} <= xs[j]) < ${m} && (i > 1 || j < length(xs))) {`,
-        `  if (i > 1 && (mean(${vec} < xs[i]) > mean(${vec} > xs[j]) || j >= length(xs))) i <- i - 1 else j <- j + 1`,
-        `}`,
-        `c(xs[i], xs[j])   # smallest central band covering >= ${pctLabel(div.pct)}`];
-      return [
-        `xs = np.unique(${vec})`,
-        `i = j = int(np.searchsorted(np.cumsum([(${vec} == x).sum() for x in xs]), len(${vec}) / 2))`,
-        `while ((${vec} >= xs[i]) & (${vec} <= xs[j])).mean() < ${m} and (i > 0 or j < len(xs) - 1):`,
-        `    if i > 0 and ((${vec} < xs[i]).mean() > (${vec} > xs[j]).mean() or j >= len(xs) - 1): i -= 1`,
-        `    else: j += 1`,
-        `[xs[i], xs[j]]   # smallest central band covering >= ${pctLabel(div.pct)}`];
+      // CI: the middle-m percentile interval for the set % (a plain percentile interval — not
+      // the tool's conservative band; simple and student-readable).
+      const a = numLit((1 - div.pct) / 2), b = numLit(1 - (1 - div.pct) / 2);
+      const args = R ? `c(${a}, ${b})` : `[${a}, ${b}]`;
+      return [`${quant(args)}   # middle ${pctLabel(div.pct)} (percentile interval)`];
     }
     const a = numLit(Math.min(div.cuts[0], div.cuts[1])), b = numLit(Math.max(div.cuts[0], div.cuts[1]));
     return [`${band(a, b)}   # P(${a} <= stat <= ${b})`];

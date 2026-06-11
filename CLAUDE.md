@@ -270,10 +270,10 @@ framing (`{ variable, cuts, range, dir, by, pct }`) via an `onDivider` callback,
 vector, one of: **p-value** `mean(vec >= v)` (right) / `mean(vec <= v)` (left — the focused
 tail is always inclusive of the cut) (tail + value), **critical value** (tail + %) as the
 percentile `quantile(vec, 1-m)` (right) / `quantile(vec, m)` (left), **CI** (range + %) as the
-`conservativeBand` central-family walk — a short median-start loop that extends the larger
-excluded tail until coverage ≥ the target, emitted verbatim so the code reproduces the tool's
-exact (conservative, covers ≥ target) band — **band proportion** `mean(vec >= lo & vec <= hi)`
-(range + value); two-sided shows
+plain percentile interval `quantile(vec, c((1-m)/2, 1-(1-m)/2))` for the set % — deliberately
+**not** the tool's `conservativeBand` (the student-facing code stays a simple one-liner; it
+won't match the drawn band exactly on discrete data, which is acceptable) — **band proportion**
+`mean(vec >= lo & vec <= hi)` (range + value); two-sided shows
 both `>= v` / `< v` proportions (disjoint). The on-plot left-tail read-out is built inclusively
 to match. Falls back to the `>= 0` placeholder when the divider is off or on a non-emitted
 (derived) column.
