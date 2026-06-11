@@ -51,41 +51,14 @@ export function snapMeasure(v, candidates, pxPerUnit, cursorY = null, threshold 
   return best;
 }
 
-// Snap a target proportion to the **achievable** empirical cut: the distinct data value whose
-// directional proportion is closest to `target`, minimizing coverage error on a discrete
-// sampling distribution (where the achievable coverages are coarse and a plain quantile snaps
-// to a tie cluster, overshooting). `side` matches the divider's regions:
-//   "ge" P(x≥v) / "le" P(x≤v)  → tail cuts (critical value)
-//   "lt" P(x<v) / "gt" P(x>v)  → the excluded side of a middle band's lower / upper cut
-export function nearestCut(values, target, side) {
-  const N = values.length;
-  if (!N) return NaN;
-  const prop = v => {
-    let c = 0;
-    for (const x of values) {
-      if (side === "ge" ? x >= v : side === "le" ? x <= v : side === "lt" ? x < v : x > v) c++;
-    }
-    return c / N;
-  };
-  let best = values[0], bestErr = Infinity;
-  for (const v of new Set(values)) {
-    const e = Math.abs(prop(v) - target);
-    if (e < bestErr) { bestErr = e; best = v; }
-  }
-  return best;
-}
-
-// Snap a middle band to the **achievable central interval** whose coverage P(lo ≤ x ≤ hi) is
-// closest to `target`. The candidate set is the nested family of *central* bands, built by
-// starting at the median value and repeatedly extending whichever side currently has the
-// larger excluded tail (ties → the upper side, matching the divider's inclusive-upper
-// convention). Snapping the two tails independently (each → (1-target)/2) doesn't coordinate
-// the band's total coverage; an unconstrained joint search over all (lo, hi) pairs is worse —
-// it picks degenerate one-sided bands (e.g. [min, hi]) that happen to land closer in raw
-// coverage but aren't a CI. Walking the central family keeps the tails balanced and makes the
-// chosen coverage switch at the *midpoint* between consecutive achievable central coverages.
-// Returns [lo, hi] data values. O(k) in the number of *distinct* values via cumulative counts.
-export function nearestBand(values, target) {
+// Snap a middle band to the **smallest achievable central band that covers ≥ `target`** — a
+// conservative CI: setting 0.95 yields an interval whose coverage is at least 0.95 (never
+// under, even though discrete data rarely lands exactly on the nominal level). Builds the
+// nested family of *central* bands — start at the median value and repeatedly extend whichever
+// side currently has the larger excluded tail (ties → the upper side, matching the divider's
+// inclusive-upper convention) — and stops at the first band reaching the target (else the full
+// range). Returns [lo, hi] data values. O(N + k log k) in the number of *distinct* values.
+export function conservativeBand(values, target) {
   const N = values.length;
   if (!N) return [NaN, NaN];
   const cnt = new Map();
@@ -94,16 +67,15 @@ export function nearestBand(values, target) {
   const k = xs.length;
   const cum = new Array(k); // cum[i] = count of values ≤ xs[i]
   let run = 0;
-  for (let i = 0; i < k; i++) { run += cnt.get(xs[i]); cum[i] = run; }
+  for (let c = 0; c < k; c++) { run += cnt.get(xs[c]); cum[c] = run; }
   let med = 0; while (med < k - 1 && cum[med] < N / 2) med++; // first value reaching the median
-  let i = med, j = med, best = [xs[i], xs[j]], bestErr = Math.abs((cum[j] - (i ? cum[i - 1] : 0)) / N - target);
-  while (i > 0 || j < k - 1) {
+  let i = med, j = med;
+  const cov = () => (cum[j] - (i ? cum[i - 1] : 0)) / N;
+  while (cov() < target && (i > 0 || j < k - 1)) {
     const below = i > 0 ? cum[i - 1] : 0, above = N - cum[j];
     if (i > 0 && (below > above || j >= k - 1)) i--; else j++; // extend the larger excluded tail; tie → upper
-    const err = Math.abs((cum[j] - (i ? cum[i - 1] : 0)) / N - target);
-    if (err < bestErr - 1e-12) { best = [xs[i], xs[j]]; bestErr = err; } // first (narrowest) on ties
   }
-  return best;
+  return [xs[i], xs[j]];
 }
 
 // Split `values` (finite plotted numbers) into proportion regions about `cuts`.

@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
 import { COLORS, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
-import { numericSummary, lsFit, statLabel, statKey, computeStat, FN_OPTS } from "../lib/stats";
+import { numericSummary, lsFit, statLabel, statKey, computeStat, FN_OPTS, quantile } from "../lib/stats";
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
 import { makeScale, stackDots } from "../lib/scale";
-import { clampVal, snapValue, snapMeasure, regions, nearestCut } from "../lib/measure";
+import { clampVal, snapValue, snapMeasure, regions, conservativeBand } from "../lib/measure";
 import { Sel, ChkLabel, InlineEdit, NumInput } from "./ui";
 
 // Format a proportion (0–1) for on-plot read-outs — fixed 3 decimals so the plots
@@ -621,13 +621,15 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     const { lo, hi } = divDomain, want = divRange ? 2 : 1;
     if (pctActive && divDomain.values.length) {
       const vals = divDomain.values, m = divPct;
-      // Snap to the achievable empirical cut(s) nearest the target proportion (minimizing
-      // coverage error on a discrete distribution). Range → the band whose *total* coverage
-      // P(lo ≤ x ≤ hi) is closest to m (a joint search — `nearestBand`); single → the upper
-      // (right, x≥v) or lower (left, x≤v) tail (`nearestCut`). Matches measure.js `regions`.
+      // Range (CI) → the smallest achievable central band covering ≥ m (conservative — covers
+      // at least the set proportion; `conservativeBand`). Single tail → a standard interpolating
+      // percentile critical value (the 1-m percentile for a right tail, the m percentile for a
+      // left tail; constraint #5 `quantile`).
+      const sorted = [...vals].sort((a, b) => a - b); // quantile() expects sorted input
+      const q = t => clampVal(quantile(sorted, t), lo, hi);
       effCuts = divRange
-        ? nearestBand(vals, m).map(c => clampVal(c, lo, hi))
-        : [clampVal(nearestCut(vals, m, divDir === "right" ? "ge" : "le"), lo, hi)];
+        ? conservativeBand(vals, m).map(c => clampVal(c, lo, hi))
+        : [q(divDir === "right" ? 1 - m : m)];
     } else {
       const inRange = v => v >= lo && v <= hi;
       effCuts = (divCuts.length === want && divCuts.every(inRange))

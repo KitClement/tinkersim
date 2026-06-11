@@ -132,58 +132,51 @@ function dividerInfo(cfg, stats) {
 }
 // The inference line(s) a divider implies over a vector/Series expression `vec`, by mode:
 //   range + value → band proportion P(lo ≤ x ≤ hi)
-//   range + pct   → CI: the central band whose coverage P(lo ≤ x ≤ hi) is closest to the
-//                   target — walk the nested family of central bands (start at the median,
-//                   extend the larger excluded tail), then pick the nearest (see measure.js
-//                   `nearestBand`). Keeps tails balanced and tracks the target's total
-//                   coverage, unlike two independent tail snaps.
+//   range + pct   → CI: the smallest central band covering ≥ the target — a conservative
+//                   interval (covers at least the set proportion). Walk the nested central
+//                   bands (start at the median, extend the larger excluded tail) and stop at
+//                   the first that reaches the target (matches measure.js `conservativeBand`).
 //   tail  + value → one-sided p-value P(x ≥ v) / P(x < v)
-//   tail  + pct   → critical value: the data value with ~the target proportion in the tail
+//   tail  + pct   → critical value: the (1-m) percentile (right) / m percentile (left)
 //   two-sided     → both proportions P(x ≥ v) / P(x < v)
+// Quantiles are type-7 percentile-based (R/numpy/pandas default), matching stats.js `quantile`.
 function dividerExprs(vec, div, lang) {
   const R = lang === "r";
   const ge = v => (R ? `mean(${vec} >= ${v})` : `(${vec} >= ${v}).mean()`);
   const lt = v => (R ? `mean(${vec} < ${v})` : `(${vec} < ${v}).mean()`);
   const le = v => (R ? `mean(${vec} <= ${v})` : `(${vec} <= ${v}).mean()`); // left tail is inclusive
   const band = (a, b) => (R ? `mean(${vec} >= ${a} & ${vec} <= ${b})` : `((${vec} >= ${a}) & (${vec} <= ${b})).mean()`);
-  // The "value v in the data closest to a target tail proportion" search (matches nearestCut).
-  // `op` is the directional comparison whose proportion we drive to `target`.
-  const nearest = (op, target) => R
-    ? `xs[which.min(abs(sapply(xs, function(v) mean(${vec} ${op} v)) - ${target}))]`
-    : `xs[np.argmin(np.abs(np.array([(${vec} ${op} v).mean() for v in xs]) - ${target}))]`;
-  const xsLine = R ? `xs <- sort(unique(${vec}))` : `xs = np.unique(${vec})`;
+  const quant = a => (R ? `quantile(${vec}, ${a})` : `np.quantile(${vec}, ${a})`);
 
   if (div.range) {
     if (div.by === "pct") {
       const m = numLit(div.pct);
-      // CI: walk the nested central bands (start at the median, each step extends the side with
-      // the larger excluded tail) and keep the one closest in coverage (matches `nearestBand`).
-      if (R) return [xsLine,
+      // CI: widen the central band until it covers ≥ the target (conservative — see
+      // `conservativeBand`). The plot shows the band's actual (≥ target) coverage; this code
+      // reproduces the same band.
+      if (R) return [
+        `xs <- sort(unique(${vec}))`,
         `i <- which(cumsum(table(factor(${vec}, xs))) >= length(${vec}) / 2)[1]; j <- i`,
-        `best <- c(xs[i], xs[j]); err <- abs(mean(${vec} >= xs[i] & ${vec} <= xs[j]) - ${m})`,
-        `while (i > 1 || j < length(xs)) {`,
+        `while (mean(${vec} >= xs[i] & ${vec} <= xs[j]) < ${m} && (i > 1 || j < length(xs))) {`,
         `  if (i > 1 && (mean(${vec} < xs[i]) > mean(${vec} > xs[j]) || j >= length(xs))) i <- i - 1 else j <- j + 1`,
-        `  e <- abs(mean(${vec} >= xs[i] & ${vec} <= xs[j]) - ${m})`,
-        `  if (e < err) { best <- c(xs[i], xs[j]); err <- e }`,
         `}`,
-        `best   # central band closest to ~${pctLabel(div.pct)} coverage`];
-      return [xsLine,
+        `c(xs[i], xs[j])   # smallest central band covering >= ${pctLabel(div.pct)}`];
+      return [
+        `xs = np.unique(${vec})`,
         `i = j = int(np.searchsorted(np.cumsum([(${vec} == x).sum() for x in xs]), len(${vec}) / 2))`,
-        `best, err = (xs[i], xs[j]), abs(((${vec} >= xs[i]) & (${vec} <= xs[j])).mean() - ${m})`,
-        `while i > 0 or j < len(xs) - 1:`,
+        `while ((${vec} >= xs[i]) & (${vec} <= xs[j])).mean() < ${m} and (i > 0 or j < len(xs) - 1):`,
         `    if i > 0 and ((${vec} < xs[i]).mean() > (${vec} > xs[j]).mean() or j >= len(xs) - 1): i -= 1`,
         `    else: j += 1`,
-        `    e = abs(((${vec} >= xs[i]) & (${vec} <= xs[j])).mean() - ${m})`,
-        `    if e < err: best, err = (xs[i], xs[j]), e`,
-        `[best[0], best[1]]   # central band closest to ~${pctLabel(div.pct)} coverage`];
+        `[xs[i], xs[j]]   # smallest central band covering >= ${pctLabel(div.pct)}`];
     }
     const a = numLit(Math.min(div.cuts[0], div.cuts[1])), b = numLit(Math.max(div.cuts[0], div.cuts[1]));
     return [`${band(a, b)}   # P(${a} <= stat <= ${b})`];
   }
   if (div.dir === "left" || div.dir === "right") {
     if (div.by === "pct") {
-      const t = numLit(div.pct), op = div.dir === "right" ? ">=" : "<=";
-      return [xsLine, `${nearest(op, t)}   # critical value (~${pctLabel(div.pct)} ${div.dir} tail)`];
+      // Critical value: the percentile cutting off the focused tail (right → upper, left → lower).
+      const q = numLit(div.dir === "right" ? 1 - div.pct : div.pct);
+      return [`${quant(q)}   # critical value (~${pctLabel(div.pct)} ${div.dir} tail)`];
     }
     const v = numLit(div.cuts[0]);
     return div.dir === "right" ? [`${ge(v)}   # p-value (upper tail)`] : [`${le(v)}   # p-value (lower tail)`];
