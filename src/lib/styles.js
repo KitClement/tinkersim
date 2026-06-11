@@ -16,8 +16,8 @@ const ctrlLbl = { fontSize:12, color:"#555", display:"flex", alignItems:"center"
 // header gradient and in the integrated gutter). Read by every CodeBox + the gutter.
 const CODE_SECTIONS = [
   { id:"sampler",   title:"Sampler",          symbol:"star",     color:"#ff2b2b", cbColor:"#000000" },
-  { id:"single",    title:"Single sample",    symbol:"circle",   color:"#ffa92b", cbColor:"#ffa92b" },
-  { id:"collect",   title:"For-loop (collect)", symbol:"triangle", color:"#34ff2b", cbColor:"#9e9e9e" },
+  { id:"single",    title:"Statistics",       symbol:"circle",   color:"#ffa92b", cbColor:"#ffa92b" },
+  { id:"collect",   title:"For-loop",         symbol:"triangle", color:"#34ff2b", cbColor:"#9e9e9e" },
   { id:"inference", title:"Inference",        symbol:"square",   color:"#2b66ff", cbColor:"#2b66ff" },
 ];
 // Resolve a section's effective color for the current color-blind mode.

@@ -813,16 +813,16 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
       <div style={{ display:"flex", gap:10, marginBottom:8, flexWrap:"wrap", fontSize:12 }}>
         {showStatToggles && (
           <>
-            <ChkLabel checked={showBox} onChange={setShowBox} label="📦 Boxplot" />
+            <ChkLabel checked={showBox} onChange={setShowBox} label="Boxplot" />
             <ChkLabel checked={showMean} onChange={setShowMean} label="△ Mean" />
             <ChkLabel checked={showSD} onChange={setShowSD} label="↔ ±1 SD" />
           </>
         )}
         {bivariate && xNumeric && yNumeric && (
-          <ChkLabel checked={showLS} onChange={setShowLS} label="📈 LS Line" />
+          <ChkLabel checked={showLS} onChange={setShowLS} label="LS Line" />
         )}
         {!trackable && (showStatToggles || (bivariate && xNumeric && yNumeric)) && (
-          <ChkLabel checked={showValues} onChange={setShowValues} label="🔢 Show values" />
+          <ChkLabel checked={showValues} onChange={setShowValues} label="Show values" />
         )}
         {showCatToggles && (
           <>
@@ -830,8 +830,8 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
             <ChkLabel checked={showPct} onChange={setShowPct} label="Proportion" />
           </>
         )}
-        {dividerAvailable && <ChkLabel checked={divOn} onChange={setDivOn} label="📏 Divider" />}
-        {rulerAvailable && <ChkLabel checked={rulerOn} onChange={setRulerOn} label="📐 Ruler" />}
+        {dividerAvailable && <ChkLabel checked={divOn} onChange={setDivOn} label="Divider" />}
+        {rulerAvailable && <ChkLabel checked={rulerOn} onChange={setRulerOn} label="Ruler" />}
       </div>
 
       {/* Divider controls (Phase 6) — the read-outs themselves live on the plot */}
@@ -913,7 +913,7 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
       {/* Click-to-track hint (suppressed while the cat-difference ruler claims clicks) */}
       {trackable && !showCatRuler && (
         <div style={{ fontSize:11, color:"#bbb", marginBottom:8 }}>
-          💡 Click a number on the plot to collect that statistic (click again to stop).
+          Click a number on the plot to collect that statistic (click again to stop).
         </div>
       )}
 
@@ -1535,8 +1535,7 @@ function CollectTable({ trackedStats, collectRows, onRemove, labelFor = statLabe
               <th style={{ position:"sticky", top:0, background:"#f8f9fa", color:"#bbb", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid #e5e7eb" }}>#</th>
               {trackedStats.map(s => (
                 <th key={s.id} title={titleFor ? titleFor(s) : undefined} style={{ position:"sticky", top:0, background: s.kind === "derived" ? "#fef3c7" : "#f1f5f9", color:"#334155", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid #e5e7eb", whiteSpace:"nowrap" }}>
-                  {s.kind === "derived" && <span title="Derived column" style={{ marginRight:3 }}>ƒ</span>}
-                  <span style={{ fontFamily:"monospace", color: s.kind === "derived" ? "#b45309" : "#4338ca" }}>{labelFor(s)}</span>
+                  <span title={s.kind === "derived" ? "Derived column" : undefined} style={{ fontFamily:"monospace", color: s.kind === "derived" ? "#b45309" : "#4338ca" }}>{labelFor(s)}</span>
                   <button onClick={() => onRemove(s.id)} title="Remove column" style={{ ...btnX, fontSize:13, marginLeft:4, verticalAlign:"middle" }}>×</button>
                 </th>
               ))}

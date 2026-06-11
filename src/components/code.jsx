@@ -69,7 +69,7 @@ export function CodeIntegrated({ lines, cbMode }) {
   return (
     <div style={{ border:"1px solid #e7e7ee", borderRadius:10, overflow:"hidden", background:"#fff" }}>
       <div style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 10px", background:"#f7f7fb", borderBottom:"1px solid #eee", flexWrap:"wrap" }}>
-        <span style={{ fontSize:13, fontWeight:700, color:"#2c3e50" }}>Integrated program</span>
+        <span style={{ fontSize:13, fontWeight:700, color:"#2c3e50" }}>Integrated code</span>
         <div style={{ display:"flex", gap:10, marginLeft:4, flexWrap:"wrap" }}>
           {CODE_SECTIONS.map(s => (
             <span key={s.id} style={{ display:"flex", alignItems:"center", gap:3, fontSize:10.5, color:"#777" }}>

@@ -8,7 +8,7 @@ import { encodeConfig, decodeConfig, checkHiddenPassword, shareURL } from "./lib
 import { StageCard } from "./components/devices";
 import { CodeControls, CodeBeside, CodeIntegrated } from "./components/code";
 import { generateCode } from "./lib/codegen";
-import { CopyColumnButton, NumInput } from "./components/ui";
+import { NumInput } from "./components/ui";
 import { EDAPlot, SampleResults, StatDefiner, DerivedBuilder, DistributionPlot, CollectTable } from "./components/plots";
 import prismLogo from "./assets/prism-logo.svg";
 import prismLogoCb from "./assets/prism-logo-cb.svg";
@@ -217,7 +217,7 @@ export default function App() {
   };
 
   // Batch accumulation ("Collect N") for the tracked-stat table
-  const [batchSize, setBatchSize] = useState(500);
+  const [batchSize, setBatchSize] = useState(999);
   const [batchCollecting, setBatchCollecting] = useState(false);
   const [batchProgress, setBatchProgress] = useState(0);
   const batchCancelRef = useRef(false);
@@ -567,7 +567,7 @@ export default function App() {
   // Build a shareable URL for the current sampler config and copy it (Task C). With a
   // password, the link is hidden (Task D): contents are veiled but it still runs.
   const doShare = password => {
-    const blob = encodeConfig({ pipeline, sampleSize, runMode, stopRule, trackedStats, codeLang }, password ? { password } : undefined);
+    const blob = encodeConfig({ pipeline, sampleSize, runMode, stopRule, codeLang }, password ? { password } : undefined);
     const url = shareURL(blob);
     const announce = () => { setShareMsg(password ? "🔒 Hidden link copied!" : "🔗 Link copied!"); setTimeout(() => setShareMsg(""), 1900); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -607,15 +607,13 @@ export default function App() {
     a.download = name; a.click();
   };
 
-  const SPEED_LABELS = ["🐢 Slow", "🐇 Fast", "⚡ Instant"];
-
   // Generated R/Python code (Task E), recomputed from the live config. `null` when the code
   // toggle is off so each `CodeBeside` falls back to a no-layout-cost full-width tool. Each
   // section is placed next to the tool it mirrors (sampler / sample-results / collect-table /
   // collect-plot); the generators read the same specs the UI uses (see lib/codegen.js).
   const code = useMemo(
-    () => (codeLang === "off" ? null : generateCode({ pipeline, sampleSize, runMode, stopRule, trackedStats, collectedCount: collectRows.length, divider: dividerState }, codeLang)),
-    [codeLang, pipeline, sampleSize, runMode, stopRule, trackedStats, collectRows.length, dividerState]
+    () => (codeLang === "off" ? null : generateCode({ pipeline, sampleSize, runMode, stopRule, trackedStats, collectedCount: collectRows.length, divider: dividerState, hidden: concealed }, codeLang)),
+    [codeLang, pipeline, sampleSize, runMode, stopRule, trackedStats, collectRows.length, dividerState, concealed]
   );
 
   return (
@@ -645,15 +643,15 @@ export default function App() {
           <button onClick={() => setEdaOpen(o => !o)}
             style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, fontWeight:700, color:"#2c3e50", display:"flex", alignItems:"center", gap:6 }}>
             <span style={{ transform: edaOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
-            📂 Data &amp; Exploratory Analysis
+            Data &amp; Exploratory Analysis
           </button>
           {dataset && <span style={{ fontSize:11, color:"#aaa" }}>{dataset.name} · {dataset.rows.length} rows · {dataset.headers.length} cols</span>}
           <label style={{ marginLeft:"auto", ...btnNav, fontSize:12, cursor:"pointer", display:"inline-flex", alignItems:"center", gap:5 }}>
-            ⬆ Upload CSV
+            Upload CSV
             <input type="file" accept=".csv,text/csv" style={{ display:"none" }}
               onChange={e => { const f = e.target.files && e.target.files[0]; if (f) handleCSVFile(f); }} />
           </label>
-          <button onClick={startManualData} style={{ ...btnNav, fontSize:12 }}>✏️ Enter data manually</button>
+          <button onClick={startManualData} style={{ ...btnNav, fontSize:12 }}>Enter data manually</button>
           {dataset && <button onClick={() => setDataset(null)} style={{ ...btnNav, fontSize:12 }}>✕ Clear</button>}
         </div>
 
@@ -662,18 +660,8 @@ export default function App() {
             <div>
               <EDAPlot rows={dataset.rows} headers={dataset.headers}
                 onChange={(headers, rows) => setDataset({ ...dataset, headers, rows })} />
-              <div style={{ marginTop:12, paddingTop:10, borderTop:"1px solid #f0f0f0" }}>
-                <div style={{ fontSize:11, fontWeight:700, color:"#aaa", letterSpacing:1, textTransform:"uppercase", marginBottom:6 }}>
-                  Copy a column
-                </div>
-                <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
-                  {dataset.headers.map(h => (
-                    <CopyColumnButton key={h} header={h} rows={dataset.rows} />
-                  ))}
-                </div>
-                <div style={{ fontSize:10, color:"#bbb", marginTop:4 }}>
-                  Copies every value in the column. Build a Mixer in the sampler below, then use its <strong>📋 paste</strong> button to load the data.
-                </div>
+              <div style={{ fontSize:10, color:"#bbb", marginTop:8 }}>
+                Build a Stacks or Mixer in the sampler below, then use its <strong>Fill from data</strong> control to load a column from this dataset.
               </div>
             </div>
           ) : (
@@ -686,18 +674,18 @@ export default function App() {
 
       {/* Pipeline */}
       <div style={{ background:"#fff", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px rgba(0,0,0,0.04)", border:"1px solid #eee" }}>
-       <CodeBeside sectionId="sampler" lines={code && code.sampler} cbMode={cbMode}>
+       <CodeBeside sectionId="sampler" lines={concealed ? null : (code && code.sampler)} cbMode={cbMode}>
         <div style={{ display:"flex", gap:8, marginBottom:10, alignItems:"center", flexWrap:"wrap" }}>
-          <span style={{ fontSize:11, fontWeight:700, color:"#bbb", letterSpacing:1, textTransform:"uppercase" }}>Sampler Pipeline</span>
+          <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>Sampler</span>
           {concealed ? (
             <>
               <span style={{ fontSize:12, color:"#7c3aed", fontWeight:700, display:"inline-flex", alignItems:"center", gap:5 }}>🔒 Hidden sampler — contents concealed</span>
               <button onClick={revealSampler}
-                style={{ padding:"4px 10px", background:"#f3e8ff", border:"1.5px solid #e3d0ff", borderRadius:7, fontSize:12, cursor:"pointer", color:"#7c3aed", fontWeight:600 }}>🔓 Reveal</button>
+                style={{ padding:"4px 10px", background:"#f3e8ff", border:"1.5px solid #e3d0ff", borderRadius:7, fontSize:12, cursor:"pointer", color:"#7c3aed", fontWeight:600 }}>Reveal</button>
             </>
           ) : (
             <>
-              {[["stacks", "📊 Stacks"], ["mixer", "🎱 Mixer"], ["spinner", "🎰 Spinner"]].map(([t, l]) => (
+              {[["stacks", "Stacks"], ["mixer", "Mixer"], ["spinner", "Spinner"]].map(([t, l]) => (
                 <button key={t} onClick={() => addStage(t)} disabled={sampling}
                   style={{ padding:"4px 10px", background:"#f7f8fa", border:"1.5px dashed #ddd", borderRadius:7, fontSize:12, cursor:sampling?"not-allowed":"pointer", color:sampling?"#bbb":"#555", opacity:sampling?0.5:1 }}>+ {l}</button>
               ))}
@@ -711,7 +699,6 @@ export default function App() {
               its header rather than the app-level top bar (B3). */}
           <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
-              <span style={{ fontSize:10, color:"#888" }}>{SPEED_LABELS[animSpeed]}</span>
               <input type="range" min={0} max={2} step={1} value={animSpeed} onChange={e => setAnimSpeed(+e.target.value)} style={{ width:80, accentColor:"#6366f1" }} />
               <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"#bbb", width:80 }}>
                 <span>slow</span><span>fast</span><span>instant</span>
@@ -795,7 +782,7 @@ export default function App() {
               ) : (
                 <StageCard stage={stage} index={i} total={pipeline.length} upstreamStages={pipeline.slice(0, i)}
                   nameOf={nameOf} onChange={st => updStage(i, st)} onRemove={() => remStage(i)} onMove={movStage}
-                  animStates={animStates} locked={sampling} nameError={invalidNameIds.has(stage.id)} />
+                  animStates={animStates} locked={sampling} nameError={invalidNameIds.has(stage.id)} dataset={dataset} />
               )}
               {i < pipeline.length - 1 && <div style={{ alignSelf:"center", color:"#ccc", fontSize:20, flexShrink:0 }}>→</div>}
             </div>
@@ -818,7 +805,7 @@ export default function App() {
       {/* Collect Statistics */}
       <div style={{ background:"#fff", borderRadius:14, padding:14, boxShadow:"0 1px 6px rgba(0,0,0,0.04)", border:"1px solid #eee", opacity:sampleData.length ? 1 : 0.35, pointerEvents:sampleData.length ? "auto" : "none", transition:"opacity 0.3s" }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
-          <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>📈 Collect Statistics</span>
+          <span style={{ fontSize:14, fontWeight:700, color:"#2c3e50" }}>Collect Statistics</span>
           <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <label style={ctrlLbl}>Collect
               <NumInput value={batchSize} min={1} max={100000} round={0}
@@ -836,7 +823,7 @@ export default function App() {
                 <button onClick={() => {
                   const rows = collectRows.map((r, i) => { const o = { _rep:i + 1 }; trackedStats.forEach(s => { o[labelFor(s)] = r[s.id] !== undefined ? r[s.id] : ""; }); return o; });
                   exportCSV(rows, "collected-statistics.csv");
-                }} style={{ ...btnNav, fontSize:12 }}>⬇ CSV</button>
+                }} style={{ ...btnNav, fontSize:12 }}>Export CSV</button>
               </>
             )}
           </div>
@@ -857,7 +844,7 @@ export default function App() {
             <button onClick={() => setDerivedOpen(o => !o)}
               style={{ background:"none", border:"none", cursor:"pointer", fontSize:11, fontWeight:700, color:"#bbb", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
               <span style={{ transform: derivedOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
-              ƒ Build a derived statistic
+              Build a derived statistic
             </button>
             {derivedOpen && (
               <div style={{ marginTop:8 }}>

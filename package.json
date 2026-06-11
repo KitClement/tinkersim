@@ -1,9 +1,9 @@
 {
-  "name": "tinkersim",
+  "name": "prism",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Browser-based probability sampler & simulation tool (TinkerPlots-style) for statistics education.",
+  "description": "PRISM — Python & R Integrated Simulation Machine: a browser-based probability sampler & simulation tool for statistics education.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

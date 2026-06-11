@@ -73,6 +73,27 @@ function outcomeSpec(dev) {
 // A stage with a single (default) branch — the device it always draws from.
 const defDevice = st => (st.branches.find(b => b.condVar === null) || st.branches[0]).device;
 
+// ─── CSV-sourced devices (Fill-from-data) ─────────────────────────────────────
+// A device filled from an uploaded CSV column carries `source = { dataset, var }`. Codegen
+// then reads the file (read.csv / pd.read_csv) and samples that column instead of inlining a
+// literal vector. Only Fill-from-data sets `source`; any manual edit clears it (see devices.jsx).
+const devSource = dev => (dev && dev.source && dev.source.var) ? dev.source : null;
+// Reference to a sourced column on a read-in data frame `frame`. (The compact path reads into
+// `df`; the split path reads into `pop`, since `df` there is the drawn sample.)
+function srcCol(src, frame, lang) {
+  if (lang === "r") return /^[A-Za-z.][A-Za-z0-9._]*$/.test(src.var) ? `${frame}$${src.var}` : `${frame}[[${JSON.stringify(src.var)}]]`;
+  return `${frame}[${JSON.stringify(src.var)}]`;
+}
+// True when any device in the pipeline is CSV-sourced (⇒ emit one read line).
+const anySource = cfg => cfg.pipeline.some(st => st.branches.some(b => devSource(b.device)));
+// The CSV filename to read (single dataset in app state ⇒ one frame). First sourced device wins.
+function csvFile(cfg) {
+  for (const st of cfg.pipeline) for (const b of st.branches) {
+    const s = devSource(b.device); if (s) return s.dataset || "data.csv";
+  }
+  return "data.csv";
+}
+
 // ─── Statistic selection & identity ───────────────────────────────────────────
 // The enabled, code-emittable statistics: plain (non-derived) tracked stats. Derived columns
 // aren't emitted (scope); an empty list means "nothing enabled yet".
@@ -190,6 +211,10 @@ function regionExpr(xExpr, s, lang) {
 
 // The whole-sample draw expression for one device.
 function drawVec(col, dev, lang) {
+  const src = devSource(dev);
+  if (src) return lang === "r"
+    ? `${col} <- sample(${srcCol(src, "df", "r")}, n, replace = TRUE)`
+    : `${col} = ${srcCol(src, "df", "py")}.sample(n, replace=True)`;
   const { labels, weights, uniform } = outcomeSpec(dev);
   if (!labels.length) return lang === "r" ? `${col} <- NA` : `${col} = pop_${col}.sample(n, replace=True)`;
   if (lang === "r") {
@@ -246,6 +271,7 @@ function genCompact(cfg, names, lang) {
     const sampler = mk("sampler");
     sampler.push("# Sampler — draw one sample of n from each device");
     if (wor) sampler.push("# (a device draws without replacement; this code samples with replacement)");
+    if (anySource(cfg)) sampler.push(`df <- read.csv(${JSON.stringify(csvFile(cfg))})`);
     sampler.push(`n <- ${cfg.sampleSize}`);
     cfg.pipeline.forEach(st => sampler.push(drawVec(names[st.id], defDevice(st), "r")));
 
@@ -276,11 +302,12 @@ function genCompact(cfg, names, lang) {
   sampler.push("");
   sampler.push("# Sampler — draw one sample of n from each device");
   if (wor) sampler.push("# (a device draws without replacement; this code samples with replacement)");
+  if (anySource(cfg)) sampler.push(`df = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
   sampler.push(`n = ${cfg.sampleSize}`);
   cfg.pipeline.forEach(st => {
-    const col = names[st.id];
-    sampler.push(`pop_${col} = pd.Series(${vec(outcomeSpec(defDevice(st)).labels, "py")})`);
-    sampler.push(drawVec(col, defDevice(st), "py"));
+    const col = names[st.id], dev = defDevice(st);
+    if (!devSource(dev)) sampler.push(`pop_${col} = pd.Series(${vec(outcomeSpec(dev).labels, "py")})`);
+    sampler.push(drawVec(col, dev, "py"));
   });
 
   const single = mk("single");
@@ -314,6 +341,8 @@ function weighted(labels, w, lang) {
   return allEq ? `random.choices(${vec(labels, "py")})[0]` : `random.choices(${vec(labels, "py")}, weights = [${w.join(", ")}])[0]`;
 }
 function deviceDraw(dev, lang) {
+  const src = devSource(dev);
+  if (src) return lang === "r" ? `sample(${srcCol(src, "pop", "r")}, 1)` : `${srcCol(src, "pop", "py")}.sample(1).iloc[0]`;
   const { labels, weights } = outcomeSpec(dev);
   if (!labels.length) return lang === "r" ? "NA" : "None";
   if (labels.length === 1) return lit(labels[0]);
@@ -436,6 +465,7 @@ function genSplit(cfg, names, lang) {
     const sampler = mk("sampler");
     sampler.push("# Sampler — draw one row through the pipeline");
     if (wor) sampler.push("# (a device draws without replacement in the tool; this code samples with replacement)");
+    if (anySource(cfg)) sampler.push(`pop <- read.csv(${JSON.stringify(csvFile(cfg))})`);
     sampler.push("draw_one <- function() {");
     pipeline.forEach(st => stageBlock(st, names, "r").forEach(t => sampler.push(t)));
     sampler.push("  data.frame(" + pipeline.map(st => `${names[st.id]} = ${names[st.id]}`).join(", ") + ", stringsAsFactors = FALSE)");
@@ -503,6 +533,7 @@ function genSplit(cfg, names, lang) {
   sampler.push("");
   sampler.push("# Sampler — draw one row through the pipeline");
   if (wor) sampler.push("# (a device draws without replacement in the tool; this code samples with replacement)");
+  if (anySource(cfg)) sampler.push(`pop = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
   sampler.push("def draw_one():");
   pipeline.forEach(st => stageBlock(st, names, "py").forEach(t => sampler.push(t)));
   sampler.push("    return {" + pipeline.map(st => `${key(names[st.id])}: ${names[st.id]}`).join(", ") + "}");
@@ -603,8 +634,9 @@ function genIntegrated(cfg, names, lang) {
     if (lang === "py") { push("import pandas as pd", "sampler"); push("import numpy as np", "sampler"); push("", "sampler"); }
     push("# Set up the sampler", "sampler");
     if (wor) push("# (a device draws without replacement; this code samples with replacement)", "sampler");
+    if (anySource(cfg)) push(lang === "r" ? `df <- read.csv(${JSON.stringify(csvFile(cfg))})` : `df = pd.read_csv(${JSON.stringify(csvFile(cfg))})`, "sampler");
     push(lang === "r" ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`, "sampler");
-    if (lang === "py") cfg.pipeline.forEach(st => push(`pop_${names[st.id]} = pd.Series(${vec(outcomeSpec(defDevice(st)).labels, "py")})`, "sampler"));
+    if (lang === "py") cfg.pipeline.forEach(st => { const dev = defDevice(st); if (!devSource(dev)) push(`pop_${names[st.id]} = pd.Series(${vec(outcomeSpec(dev).labels, "py")})`, "sampler"); });
     if (!stats.length) { push("# Enable a statistic (click a value on the plot) to collect a distribution", "collect"); return L; }
     push(lang === "r" ? `N <- ${collectN(cfg)}${collectNote(cfg)}` : `N = ${collectN(cfg)}${collectNote(cfg)}`, "collect");
     stats.forEach(({ id }) => push(lang === "r" ? `${id} <- numeric(N)` : `${id} = []`, "collect"));
@@ -630,11 +662,25 @@ function genIntegrated(cfg, names, lang) {
   return L;
 }
 
+// When the sampler is concealed (hidden + not revealed), strip the device internals from the
+// integrated program: collapse each run of sampler-tagged lines into one placeholder comment,
+// keeping the For-loop / Statistics / Inference structure (and its indentation) intact.
+function hideSampler(lines) {
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].section !== "sampler") { out.push(lines[i]); continue; }
+    const indent = (lines[i].text.match(/^\s*/) || [""])[0];
+    out.push({ text: `${indent}# (sampler hidden)`, section: "sampler" });
+    while (i + 1 < lines.length && lines[i + 1].section === "sampler") i++;
+  }
+  return out;
+}
+
 export function generateCode(cfg, lang) {
   const language = lang === "python" ? "py" : "r";
   const names = buildNames(cfg.pipeline || []);
   const { sampler, single, collect, inference } =
     isSimple(cfg) ? genCompact(cfg, names, language) : genSplit(cfg, names, language);
-  const integrated = genIntegrated(cfg, names, language);
+  const integrated = cfg.hidden ? hideSampler(genIntegrated(cfg, names, language)) : genIntegrated(cfg, names, language);
   return { sampler, single, collect, inference, integrated };
 }
