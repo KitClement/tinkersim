@@ -51,9 +51,11 @@ export default function App() {
   const [animStates, setAnimStates] = useState({});
   const cancelRef = useRef(false);
   // Mirror animSpeed into a ref so an in-progress run reads the live value and a
-  // mid-run slider change takes effect on the next draw (B2).
+  // mid-run slider change takes effect on the next draw (B2). A concealed (hidden +
+  // not revealed) sampler shows no device animation, so force Instant (2) until the
+  // password unlocks it — otherwise a hidden run just sits at the chosen Slow pace.
   const speedRef = useRef(animSpeed);
-  useEffect(() => { speedRef.current = animSpeed; }, [animSpeed]);
+  useEffect(() => { speedRef.current = (hidden && !revealed) ? 2 : animSpeed; }, [animSpeed, hidden, revealed]);
 
   // Seed all authoring state from a decoded shared config (Task C). `migratePipeline`
   // returns the old-id → stage-id map; for a normal (already-staged) config it is identity,
@@ -699,7 +701,9 @@ export default function App() {
               its header rather than the app-level top bar (B3). */}
           <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
-              <input type="range" min={0} max={2} step={1} value={animSpeed} onChange={e => setAnimSpeed(+e.target.value)} style={{ width:80, accentColor:"#6366f1" }} />
+              <input type="range" min={0} max={2} step={1} value={concealed ? 2 : animSpeed} disabled={concealed}
+                title={concealed ? "Hidden samplers run instantly until revealed" : undefined}
+                onChange={e => setAnimSpeed(+e.target.value)} style={{ width:80, accentColor:"#6366f1", opacity:concealed?0.5:1, cursor:concealed?"not-allowed":"pointer" }} />
               <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"#bbb", width:80 }}>
                 <span>slow</span><span>fast</span><span>instant</span>
               </div>
