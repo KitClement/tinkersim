@@ -742,7 +742,8 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
     const { lo, hi } = divDomain;
     const base = (rulerPts.length === 2 && rulerPts.every(specOk))
       ? rulerPts
-      : [{ value: lo + (hi - lo) / 3, spec: null, label: null }, { value: lo + 2 * (hi - lo) / 3, spec: null, label: null }];
+      // A (index 0) defaults to the right, B (index 1) to the left, so A − B starts positive.
+      : [{ value: lo + 2 * (hi - lo) / 3, spec: null, label: null }, { value: lo + (hi - lo) / 3, spec: null, label: null }];
     effPts = base.map(p => ({ ...p, value: clampVal(resolveVal(p), lo, hi) }));
   }
   const setRulerPt = (i, raw) => {
@@ -885,7 +886,6 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
             </label>
           ))}
           <span style={{ color:"#0f766e", fontWeight:700 }}>A − B = {parseFloat((effPts[0].value - effPts[1].value).toFixed(4))}</span>
-          <span style={{ color:"#94a3b8" }}>drag onto a dot, mean, median or quartile to anchor it; move up/down to pick between values at the same spot (a ring marks the target)</span>
         </div>
       )}
 
