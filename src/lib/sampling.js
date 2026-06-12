@@ -195,9 +195,9 @@ function drawSample(pipeline, sampleSize, opts) {
 const mkSpinner = n => ({
   id:uid(), type:"spinner", varName:`spin${n}`, withReplacement:true,
   slices:[
-    { id:uid(), label:"a", pct:33.3, color:"#e74c3c" },
-    { id:uid(), label:"b", pct:33.3, color:"#3498db" },
-    { id:uid(), label:"c", pct:33.4, color:"#2ecc71" },
+    { id:uid(), label:"a", pct:100/3, color:"#e74c3c" },
+    { id:uid(), label:"b", pct:100/3, color:"#3498db" },
+    { id:uid(), label:"c", pct:100/3, color:"#2ecc71" },
   ]
 });
 const mkStacks = n => ({
