@@ -72,6 +72,11 @@ function outcomeSpec(dev) {
 }
 // A stage with a single (default) branch — the device it always draws from.
 const defDevice = st => (st.branches.find(b => b.condVar === null) || st.branches[0]).device;
+// A "pool" device draws from a finite, integer-count population (stacks = item counts, mixer =
+// ball multiplicities). It's reproduced as the EXPANDED pool (each label repeated by its count),
+// so with-/without-replacement is just the `replace` flag — no weights. A spinner is NOT a pool:
+// its weights are fractional pct, applied at draw time, and it's always with replacement.
+const isPool = dev => dev && (dev.type === "stacks" || dev.type === "mixer");
 
 // ─── CSV-sourced devices (Fill-from-data) ─────────────────────────────────────
 // A device filled from an uploaded CSV column carries `source = { dataset, var }`. Codegen
@@ -98,28 +103,31 @@ function csvFile(cfg) {
 // The enabled, code-emittable statistics: plain (non-derived) tracked stats. Derived columns
 // aren't emitted (scope); an empty list means "nothing enabled yet".
 const plainStats = cfg => (cfg.trackedStats || []).filter(s => s && s.kind !== "derived" && s.fn);
-// A statistic reads a single column (no cross-column alignment) — eligible for the compact path.
-const singleColumn = s => !s.condVar && !s.variable2 && s.fn !== "slope" && s.fn !== "intercept";
-// A readable, valid identifier for one statistic (its column in the collect table).
+// A readable, valid identifier for one statistic (its column in the collect table). A group stat
+// (condVar) appends its group value, so two group means read `mean_value_A` / `mean_value_B`.
 function statId(s, names) {
   const v = names[s.variable] || "x", t = s.target != null ? "_" + safeName(s.target) : "";
-  switch (s.fn) {
-    case "mean": return `mean_${v}`;
-    case "median": return `median_${v}`;
-    case "sd": return `sd_${v}`;
-    case "min": return `min_${v}`;
-    case "max": return `max_${v}`;
-    case "q1": return `q1_${v}`;
-    case "q3": return `q3_${v}`;
-    case "count": return `n_${v}`;
-    case "countVal": return `count_${v}${t}`;
-    case "proportion": return `prop_${v}${t}`;
-    case "countBetween": return `count_${v}`;
-    case "propBetween": return `prop_${v}`;
-    case "slope": return `slope_${names[s.variable2] || "y"}_${v}`;
-    case "intercept": return `intercept_${names[s.variable2] || "y"}_${v}`;
-    default: return `stat_${v}`;
-  }
+  const g = s.condVar != null ? "_" + safeName(s.condVal) : "";
+  const base = (() => {
+    switch (s.fn) {
+      case "mean": return `mean_${v}`;
+      case "median": return `median_${v}`;
+      case "sd": return `sd_${v}`;
+      case "min": return `min_${v}`;
+      case "max": return `max_${v}`;
+      case "q1": return `q1_${v}`;
+      case "q3": return `q3_${v}`;
+      case "count": return `n_${v}`;
+      case "countVal": return `count_${v}${t}`;
+      case "proportion": return `prop_${v}${t}`;
+      case "countBetween": return `count_${v}`;
+      case "propBetween": return `prop_${v}`;
+      case "slope": return `slope_${names[s.variable2] || "y"}_${v}`;
+      case "intercept": return `intercept_${names[s.variable2] || "y"}_${v}`;
+      default: return `stat_${v}`;
+    }
+  })();
+  return base + g;
 }
 // Pair each stat with a unique identifier (suffix collisions).
 function withIds(stats, names) {
@@ -136,21 +144,27 @@ function withIds(stats, names) {
 const collectN = cfg => (cfg.collectedCount > 0 ? cfg.collectedCount : 1000);
 const collectNote = cfg => (cfg.collectedCount > 0 ? "   # samples collected so far" : "   # number of samples to collect");
 
-// The Collect-plot divider (lifted from the UI), resolved against the *enabled* stats so the
-// inference section can mirror the real cutoff + framing. Returns `{ id, cuts, range, dir, by,
-// pct }` keyed by the generated result-vector name, or null (no divider / derived column / off).
+// The Collect-plot divider (lifted from the UI), resolved against the tracked stats so the
+// inference section can mirror the real cutoff + framing. Returns either `{ id, ... }` (the
+// divider sits on an enabled plain stat — `id` is its generated result-vector name) or
+// `{ derived, ... }` (it sits on a derived column — `derived` is the tracked spec, emitted from
+// its operands at inference time), or null (no divider / unresolvable column / off).
 const numLit = v => String(parseFloat(Number(v).toFixed(4)));
 const pctLabel = f => `${parseFloat((f * 100).toFixed(2))}%`;
 function dividerInfo(cfg, stats) {
   const d = cfg.divider;
   if (!d || !d.cuts || !d.cuts.length || d.statId == null) return null;
-  const match = stats.find(({ s }) => s.id === d.statId);
-  if (!match) return null;
   const cuts = d.cuts.map(Number).filter(v => !isNaN(v));
   if (!cuts.length) return null;
-  return { id: match.id, cuts, range: d.range && cuts.length >= 2,
+  const frame = { cuts, range: d.range && cuts.length >= 2,
     dir: d.dir === "left" || d.dir === "right" ? d.dir : "none",
     by: d.by === "pct" ? "pct" : "value", pct: typeof d.pct === "number" ? d.pct : 0.05 };
+  const match = stats.find(({ s }) => s.id === d.statId);
+  if (match) return { ...frame, id: match.id };
+  // A derived column is plotted: emit it from its operands (which must be enabled plain stats).
+  const der = (cfg.trackedStats || []).find(s => s && s.kind === "derived" && s.id === d.statId);
+  if (der) return { ...frame, derived: der };
+  return null;
 }
 // The inference line(s) a divider implies over a vector/Series expression `vec`, by mode:
 //   range + value → band proportion P(lo ≤ x ≤ hi)
@@ -193,6 +207,45 @@ function dividerExprs(vec, div, lang) {
   const v = numLit(div.cuts[0]);
   return [`${ge(v)}   # P(stat >= ${v})`, `${lt(v)}   # P(stat < ${v})`];
 }
+// Translate a derived column's token array (lib/expr.js) into a code expression over the collected
+// vectors. `refOf(id)` resolves a referenced stat-id to its emitted vector reference, or null if it
+// can't be emitted (e.g. a derived-of-derived operand) — in which case the whole thing returns null.
+function derivedExprCode(tokens, refOf, lang) {
+  const out = [];
+  for (const t of tokens || []) {
+    if (t.k === "num") out.push(String(t.v));
+    else if (t.k === "col") { const r = refOf(t.id); if (r == null) return null; out.push(r); }
+    else if (t.k === "op") out.push(t.v === "^" ? (lang === "r" ? " ^ " : " ** ") : ` ${t.v} `);
+    else if (t.k === "fn") out.push(lang === "r" ? t.v : "np." + t.v);   // sqrt | abs
+    else if (t.k === "lp") out.push("(");
+    else if (t.k === "rp") out.push(")");
+  }
+  return out.join("").trim();
+}
+// The inference body lines for a divider: optional setup (py list→array conversions, or a derived-
+// column definition built from its operands) then `dividerExprs` over the target vector. `vecRef(e)`
+// gives an emitted stat's collected-vector reference in this path (bare name compact; dist$x /
+// dist['x'] split); `emittedOf(id)` maps a tracked stat-id to its emitted name (or null);
+// `arrayize(e)` (py compact only) turns a collected list into a numpy array. Returns string[] of
+// lines, or null when the divider sits on something we can't emit (derived with a missing operand).
+function dividerBody(div, lang, emittedOf, vecRef, arrayize) {
+  const setup = [], done = new Set();
+  const azOnce = e => { if (!arrayize || done.has(e)) return; done.add(e); setup.push(...arrayize(e)); };
+  let target;
+  if (div.derived) {
+    const colIds = (div.derived.tokens || []).filter(t => t.k === "col").map(t => t.id);
+    for (const id of colIds) if (emittedOf(id) == null) return null;
+    colIds.forEach(id => azOnce(emittedOf(id)));
+    const expr = derivedExprCode(div.derived.tokens, id => { const e = emittedOf(id); return e == null ? null : vecRef(e); }, lang);
+    if (expr == null) return null;
+    setup.push((lang === "r" ? "derived <- " : "derived = ") + expr + "   # the plotted derived column");
+    target = "derived";
+  } else {
+    azOnce(div.id);
+    target = vecRef(div.id);
+  }
+  return [...setup, ...dividerExprs(target, div, lang)];
+}
 
 // ─── Region predicate for countBetween / propBetween (mirrors computeStat's inR) ─
 // Elementwise on a vector/Series in both languages, so `&` (not R's `&&` / Python's `and`).
@@ -209,21 +262,86 @@ function regionExpr(xExpr, s, lang) {
 // ║  COMPACT PATH — no fork, fixed n, single-column stats: one vector per device    ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
-// The whole-sample draw expression for one device.
+// The Python population-definition line for one device (compact path), or null when the device is
+// CSV-sourced (the draw reads `df` directly). Mirrors the read_csv path's one-column DataFrame:
+// a pool device (stacks/mixer) becomes the EXPANDED population (each label repeated by its count,
+// via np.repeat) so the draw is just .sample(replace=…) with no weights; a spinner keeps distinct
+// labels (its fractional pct weights are applied at draw time). Shared by genCompact + genIntegrated.
+function popDefPy(col, dev) {
+  if (devSource(dev)) return null;
+  const { labels, weights } = outcomeSpec(dev);
+  if (!labels.length) return `pop_${col} = pd.DataFrame({${key(col)}: []})`;
+  const allOnes = weights.every(w => w === 1);
+  const colVals = (isPool(dev) && !allOnes) ? `np.repeat(${vec(labels, "py")}, [${weights.join(", ")}])` : vec(labels, "py");
+  return `pop_${col} = pd.DataFrame({${key(col)}: ${colVals}})`;
+}
+// The whole-sample draw expression for one device (compact path).
 function drawVec(col, dev, lang) {
   const src = devSource(dev);
-  if (src) return lang === "r"
-    ? `${col} <- sample(${srcCol(src, "df", "r")}, n, replace = TRUE)`
-    : `${col} = ${srcCol(src, "df", "py")}.sample(n, replace=True)`;
-  const { labels, weights, uniform } = outcomeSpec(dev);
-  if (!labels.length) return lang === "r" ? `${col} <- NA` : `${col} = pop_${col}.sample(n, replace=True)`;
+  if (src) { const rep = dev.withReplacement !== false; return lang === "r"
+    ? `${col} <- sample(${srcCol(src, "df", "r")}, n${rep ? ", replace = TRUE" : ""})`
+    : `${col} = ${srcCol(src, "df", "py")}.sample(n, replace=${rep ? "True" : "False"})`; }
+  const { labels, weights, uniform, replace } = outcomeSpec(dev);
+  const pool = isPool(dev), allOnes = weights.every(w => w === 1);
+  if (!labels.length) return lang === "r" ? `${col} <- NA` : `${col} = pop_${col}[${key(col)}].sample(n, replace=True)`;
   if (lang === "r") {
-    if (labels.length === 1) return `${col} <- rep(${lit(labels[0])}, n)`;   // avoids R's sample(c(5),n) 1:5 trap
-    const prob = uniform ? "" : `, prob = c(${weights.join(", ")})`;
+    if (labels.length === 1) return `${col} <- rep(${lit(labels[0])}, n)`;   // avoids R's sample(c(5),n) 1:5 trap, valid WR & WoR
+    if (pool) {
+      // Expanded finite pool: with-/without-replacement is only the `replace` flag (no prob).
+      const popExpr = allOnes ? vec(labels, "r") : `rep(${vec(labels, "r")}, c(${weights.join(", ")}))`;
+      return `${col} <- sample(${popExpr}, n${replace ? ", replace = TRUE" : ""})`;
+    }
+    const prob = uniform ? "" : `, prob = c(${weights.join(", ")})`;   // spinner: weighted, always WR
     return `${col} <- sample(${vec(labels, "r")}, n, replace = TRUE${prob})`;
   }
-  const w = uniform ? "" : `, weights=[${weights.join(", ")}]`;
-  return `${col} = pop_${col}.sample(n, replace=True${w})`;
+  if (pool) return `${col} = pop_${col}[${key(col)}].sample(n, replace=${replace ? "True" : "False"})`;
+  const w = uniform ? "" : `, weights=[${weights.join(", ")}]`;   // spinner: weighted, always WR
+  return `${col} = pop_${col}[${key(col)}].sample(n, replace=True${w})`;
+}
+// Python compact draws every device into ONE sample DataFrame `df` (one column per device,
+// mirroring the read_csv / split-path `df`). `drawCellPy` is the per-device draw EXPRESSION
+// (no assignment) that becomes a column value; `.values` strips the sampled index so columns
+// align by position (different devices return different random indices — without this, a
+// multi-column DataFrame would misalign into NaN). `dfLinePy` wraps them into the `df = …` line;
+// `dfCol` references a device's column for the inline statistics. Shared by genCompact + genIntegrated.
+const dfCol = col => `df[${key(col)}]`;
+function drawCellPy(col, dev) {
+  const src = devSource(dev);
+  if (src) return `${srcCol(src, "pop", "py")}.sample(n, replace=${dev.withReplacement !== false ? "True" : "False"}).values`;
+  const { labels, weights, uniform, replace } = outcomeSpec(dev);
+  if (!labels.length) return `pop_${col}[${key(col)}].sample(n, replace=True).values`;
+  if (isPool(dev)) return `pop_${col}[${key(col)}].sample(n, replace=${replace ? "True" : "False"}).values`;
+  const w = uniform ? "" : `, weights=[${weights.join(", ")}]`;   // spinner: weighted, always WR
+  return `pop_${col}[${key(col)}].sample(n, replace=True${w}).values`;
+}
+function dfLinePy(cfg, names) {
+  const cells = cfg.pipeline.map(st => `${key(names[st.id])}: ${drawCellPy(names[st.id], defDevice(st))}`);
+  return `df = pd.DataFrame({${cells.join(", ")}})`;
+}
+// The column expression a compact statistic reads: the device's column, subset to a group when the
+// stat is conditional (`condVar`). Columns are row-aligned in the compact path (Python Series off
+// `df`; R a bare length-n vector), so a group stat is a straight subset of one column by another.
+function compactCol(s, names, lang) {
+  if (lang === "r") {
+    const v = names[s.variable];
+    return s.condVar ? `${v}[${names[s.condVar]} == ${lit(s.condVal)}]` : v;
+  }
+  if (s.condVar) return `df[df[${key(names[s.condVar])}] == ${lit(s.condVal)}][${key(names[s.variable])}]`;
+  return dfCol(names[s.variable]);
+}
+// True when any compact statistic needs statsmodels (Python regression import).
+const compactNeedsSm = stats => stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
+// One compact statistic as a value expression. Regression (slope/intercept) reads two row-aligned
+// columns: R fits `lm(y ~ x)` directly on the drawn vectors (no data frame needed); Python fits
+// statsmodels OLS over the sample `df`. Everything else is `vStat` over one (optionally group-subset)
+// column. Matches rStatExpr/pyStatExpr's regression so the compact and split paths agree.
+function compactStatExpr(s, names, lang) {
+  if (s.fn === "slope" || s.fn === "intercept") {
+    const v = names[s.variable], v2 = names[s.variable2];
+    if (lang === "r") return `unname(coef(lm(${v2} ~ ${v}))[${s.fn === "slope" ? 2 : 1}])`;
+    return `sm.OLS(${dfCol(v2)}, sm.add_constant(${dfCol(v)})).fit().params.iloc[${s.fn === "slope" ? 1 : 0}]`;
+  }
+  return vStat(s, compactCol(s, names, lang), lang);
 }
 // The inline statistic expression over the drawn column `v` (an R vector / a pandas Series).
 function vStat(s, v, lang) {
@@ -263,21 +381,19 @@ function vStat(s, v, lang) {
 
 function genCompact(cfg, names, lang) {
   const stats = withIds(plainStats(cfg), names);
-  const wor = cfg.pipeline.some(st => outcomeSpec(defDevice(st)).replace === false);
   const mk = section => { const a = []; a.push = t => Array.prototype.push.call(a, { text: t, section }); return a; };
   const first = stats[0];
 
   if (lang === "r") {
     const sampler = mk("sampler");
     sampler.push("# Sampler — draw one sample of n from each device");
-    if (wor) sampler.push("# (a device draws without replacement; this code samples with replacement)");
     if (anySource(cfg)) sampler.push(`df <- read.csv(${JSON.stringify(csvFile(cfg))})`);
     sampler.push(`n <- ${cfg.sampleSize}`);
     cfg.pipeline.forEach(st => sampler.push(drawVec(names[st.id], defDevice(st), "r")));
 
     const single = mk("single");
     if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
-    else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => single.push(`${id} <- ${vStat(s, names[s.variable], "r")}`)); }
+    else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => single.push(`${id} <- ${compactStatExpr(s, names, "r")}`)); }
 
     const collect = mk("collect");
     if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
@@ -286,7 +402,7 @@ function genCompact(cfg, names, lang) {
       stats.forEach(({ id }) => collect.push(`${id} <- numeric(N)`));
       collect.push("for (i in 1:N) {");
       cfg.pipeline.forEach(st => collect.push("  " + drawVec(names[st.id], defDevice(st), "r")));
-      stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${vStat(s, names[s.variable], "r")}`));
+      stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${compactStatExpr(s, names, "r")}`));
       collect.push("}");
     }
 
@@ -295,24 +411,21 @@ function genCompact(cfg, names, lang) {
     return { sampler, single, collect, inference };
   }
 
-  // Python (pandas / numpy)
+  // Python (pandas / numpy) — every device is one column of a single sample DataFrame `df`
   const sampler = mk("sampler");
   sampler.push("import pandas as pd");
   sampler.push("import numpy as np");
+  if (compactNeedsSm(stats)) sampler.push("import statsmodels.api as sm");
   sampler.push("");
-  sampler.push("# Sampler — draw one sample of n from each device");
-  if (wor) sampler.push("# (a device draws without replacement; this code samples with replacement)");
-  if (anySource(cfg)) sampler.push(`df = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
+  sampler.push("# Sampler — draw one sample of n (one column per device)");
+  if (anySource(cfg)) sampler.push(`pop = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
   sampler.push(`n = ${cfg.sampleSize}`);
-  cfg.pipeline.forEach(st => {
-    const col = names[st.id], dev = defDevice(st);
-    if (!devSource(dev)) sampler.push(`pop_${col} = pd.Series(${vec(outcomeSpec(dev).labels, "py")})`);
-    sampler.push(drawVec(col, dev, "py"));
-  });
+  cfg.pipeline.forEach(st => { const pd = popDefPy(names[st.id], defDevice(st)); if (pd) sampler.push(pd); });
+  sampler.push(dfLinePy(cfg, names));
 
   const single = mk("single");
   if (!stats.length) single.push("# Enable a statistic (click a value on the plot) to compute it here");
-  else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => single.push(`${id} = ${vStat(s, names[s.variable], "py")}`)); }
+  else { single.push("# One value per enabled statistic (this sample)"); stats.forEach(({ s, id }) => single.push(`${id} = ${compactStatExpr(s, names, "py")}`)); }
 
   const collect = mk("collect");
   if (!stats.length) collect.push("# Enable a statistic to collect its sampling distribution");
@@ -320,8 +433,8 @@ function genCompact(cfg, names, lang) {
     collect.push(`N = ${collectN(cfg)}${collectNote(cfg)}`);
     stats.forEach(({ id }) => collect.push(`${id} = []`));
     collect.push("for i in range(N):");
-    cfg.pipeline.forEach(st => collect.push("    " + drawVec(names[st.id], defDevice(st), "py")));
-    stats.forEach(({ s, id }) => collect.push(`    ${id}.append(${vStat(s, names[s.variable], "py")})`));
+    collect.push("    " + dfLinePy(cfg, names));
+    stats.forEach(({ s, id }) => collect.push(`    ${id}.append(${compactStatExpr(s, names, "py")})`));
   }
 
   const inference = mk("inference");
@@ -333,14 +446,49 @@ function genCompact(cfg, names, lang) {
 // ║  SPLIT PATH — forks, run-until, or multi-column stats need per-row drawing      ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
+// Without-replacement pool devices in the split path. Per the tool, each branch device keeps its
+// own pool (per-branch pools never bleed), so each WoR stacks/mixer branch gets a uniquely-named
+// pool, reset per sample and drawn with removal. Returns [{ devId, name, labels, weights, source }]
+// keyed by a safe, readable pool name derived from the owning stage's identifier. A CSV-sourced WoR
+// device carries its `source` so the pool template reads the data column (not a literal vector);
+// spinner/WR devices are excluded (spinner is always WR, WR draws are i.i.d.).
+function worPools(pipeline, names) {
+  const out = [], used = new Set();
+  (pipeline || []).forEach(st => {
+    (st.branches || []).forEach((b, bi) => {
+      const dev = b.device;
+      if (!isPool(dev) || dev.withReplacement !== false) return;
+      const src = devSource(dev);
+      const { labels, weights } = outcomeSpec(dev);
+      if (!src && !labels.length) return;
+      let base = `pool_${names[st.id]}` + (st.branches.length > 1 ? `_${bi + 1}` : ""), nm = base, k = 2;
+      while (used.has(nm)) nm = base + "_" + k++;
+      used.add(nm);
+      out.push({ devId: dev.id, name: nm, labels, weights, source: src });
+    });
+  });
+  return out;
+}
 // One device → a single-draw expression (per row). Length-1 outcome → the literal itself
-// (deterministic, and sidesteps R's `sample(c(5), 1)` "sample from 1:5" trap).
+// (deterministic, and sidesteps R's `sample(c(5), 1)` "sample from 1:5" trap). A WoR pool device
+// (`pools[dev.id]` set) draws-with-removal from its per-sample pool; everything else is i.i.d.
 function weighted(labels, w, lang) {
   const allEq = w.every(x => x === w[0]);
   if (lang === "r") return allEq ? `sample(${vec(labels, "r")}, 1)` : `sample(${vec(labels, "r")}, 1, prob = c(${w.join(", ")}))`;
   return allEq ? `random.choices(${vec(labels, "py")})[0]` : `random.choices(${vec(labels, "py")}, weights = [${w.join(", ")}])[0]`;
 }
-function deviceDraw(dev, lang) {
+function deviceDraw(dev, lang, pools) {
+  // A WoR device (pool set) draws-with-removal first — including a CSV-sourced WoR device, whose
+  // pool template is the data column. Check this before the sourced branch (which is WR per row).
+  const poolName = pools && pools[dev.id];
+  if (poolName) {
+    // Draw one unit from the finite pool and remove it (without replacement, within this sample).
+    // An exhausted pool yields "" — matching the tool, where an empty without-replacement device
+    // returns an empty string (drawStacks/drawMixer → null) rather than erroring.
+    if (lang === "r") return `if (length(${poolName}) > 0) { i <- sample(length(${poolName}), 1); v <- ${poolName}[i]; ${poolName} <<- ${poolName}[-i]; v } else ""`;
+    const pk = `pools[${key(poolName)}]`;
+    return `(${pk}.pop(random.randrange(len(${pk}))) if ${pk} else "")`;
+  }
   const src = devSource(dev);
   if (src) return lang === "r" ? `sample(${srcCol(src, "pop", "r")}, 1)` : `${srcCol(src, "pop", "py")}.sample(1).iloc[0]`;
   const { labels, weights } = outcomeSpec(dev);
@@ -350,32 +498,32 @@ function deviceDraw(dev, lang) {
 }
 // One stage → an assignment block, mirroring `selectBranch` (conditional branches in order,
 // then the default `else`).
-function stageBlock(stage, names, lang) {
+function stageBlock(stage, names, lang, pools) {
   const name = names[stage.id];
   const conds = stage.branches.filter(b => b.condVar !== null);
   const def = stage.branches.find(b => b.condVar === null) || stage.branches[0];
   if (!conds.length) {
-    return [lang === "r" ? `  ${name} <- ${deviceDraw(def.device, "r")}` : `    ${name} = ${deviceDraw(def.device, "py")}`];
+    return [lang === "r" ? `  ${name} <- ${deviceDraw(def.device, "r", pools)}` : `    ${name} = ${deviceDraw(def.device, "py", pools)}`];
   }
   if (lang === "r") {
     const out = [];
     conds.forEach((b, i) => {
       const head = i === 0 ? "if" : "} else if";
       out.push(`  ${i === 0 ? name + " <- " : ""}${head} (${names[b.condVar]} == ${lit(b.condVal)}) {`);
-      out.push(`    ${deviceDraw(b.device, "r")}`);
+      out.push(`    ${deviceDraw(b.device, "r", pools)}`);
     });
     out.push(`  } else {`);
-    out.push(`    ${deviceDraw(def.device, "r")}  # otherwise`);
+    out.push(`    ${deviceDraw(def.device, "r", pools)}  # otherwise`);
     out.push(`  }`);
     return out;
   }
   const out = [];
   conds.forEach((b, i) => {
     out.push(`    ${i === 0 ? "if" : "elif"} ${names[b.condVar]} == ${lit(b.condVal)}:`);
-    out.push(`        ${name} = ${deviceDraw(b.device, "py")}`);
+    out.push(`        ${name} = ${deviceDraw(b.device, "py", pools)}`);
   });
   out.push(`    else:`);
-  out.push(`        ${name} = ${deviceDraw(def.device, "py")}  # otherwise`);
+  out.push(`        ${name} = ${deviceDraw(def.device, "py", pools)}  # otherwise`);
   return out;
 }
 // Run-until stop predicate (mirrors `stopReached`).
@@ -455,25 +603,43 @@ function genSplit(cfg, names, lang) {
   const { pipeline, sampleSize, runMode, stopRule } = cfg;
   const until = runMode === "until" && stopRule && stopRule.stageId;
   const cap = until ? "max_draws" : "n";
-  const wor = pipeline.some(st => st.branches.some(b => b.device.withReplacement === false));
+  // Per-branch without-replacement pools (stacks/mixer drawn WoR). The pool map keys deviceDraw's
+  // draw-with-removal expression; templates are reset per sample.
+  const pools = worPools(pipeline, names), hasPools = pools.length > 0;
+  const poolMap = {}; pools.forEach(p => poolMap[p.devId] = p.name);
+  // Pool template: a CSV-sourced WoR device draws from its data column (`pop$var`); a literal one
+  // from its expanded counts. Every WoR device is now pool-backed, so there's no with-replacement
+  // caveat anymore (sourced WoR used to be flagged-but-approximated).
+  const tmplR = p => `${p.name}_template <- ` + (p.source ? srcCol(p.source, "pop", "r") : (p.weights.every(w => w === 1) ? vec(p.labels, "r") : `rep(${vec(p.labels, "r")}, c(${p.weights.join(", ")}))`));
+  const tmplPy = p => `${p.name}_template = list(` + (p.source ? srcCol(p.source, "pop", "py") : (p.weights.every(w => w === 1) ? vec(p.labels, "py") : `np.repeat(${vec(p.labels, "py")}, [${p.weights.join(", ")}])`)) + ")";
+  const poolInitPy = `pools = {${pools.map(p => `${key(p.name)}: list(${p.name}_template)`).join(", ")}}`;
   const stats = withIds(plainStats(cfg), names);
   const needsSm = stats.some(({ s }) => s.fn === "slope" || s.fn === "intercept");
   const first = stats[0];
-  const mk = section => { const a = []; a.push = t => Array.prototype.push.call(a, { text: t, section }); return a; };
+  const emittedById = {}; stats.forEach(({ s, id }) => emittedById[s.id] = id);
+  // `push(text)` tags the line with the array's own section; `push(text, sec)` overrides it — so a
+  // draw / statistic line inside the For-loop can carry its true section (★ sampler / ● single) for
+  // the integrated gutter, even though it lives in the green ▲ collect array.
+  const mk = section => { const a = []; a.push = (t, sec) => Array.prototype.push.call(a, { text: t, section: sec || section }); return a; };
 
   if (lang === "r") {
     const sampler = mk("sampler");
     sampler.push("# Sampler — draw one row through the pipeline");
-    if (wor) sampler.push("# (a device draws without replacement in the tool; this code samples with replacement)");
     if (anySource(cfg)) sampler.push(`pop <- read.csv(${JSON.stringify(csvFile(cfg))})`);
+    if (hasPools) {
+      sampler.push("# Without-replacement pools — reset per sample, then drawn with removal");
+      if (until) sampler.push("# (a pool can empty before the stop rule holds; the safety cap bounds the draws)");
+      pools.forEach(p => sampler.push(tmplR(p)));
+    }
     sampler.push("draw_one <- function() {");
-    pipeline.forEach(st => stageBlock(st, names, "r").forEach(t => sampler.push(t)));
+    pipeline.forEach(st => stageBlock(st, names, "r", poolMap).forEach(t => sampler.push(t)));
     sampler.push("  data.frame(" + pipeline.map(st => `${names[st.id]} = ${names[st.id]}`).join(", ") + ", stringsAsFactors = FALSE)");
     sampler.push("}");
     sampler.push("");
     if (until) {
       sampler.push("# Draw rows until the stop rule holds (n varies), capped at max_draws");
       sampler.push("draw_sample <- function(max_draws) {");
+      pools.forEach(p => sampler.push(`  ${p.name} <<- ${p.name}_template`));
       sampler.push("  rows <- list()");
       sampler.push("  repeat {");
       sampler.push("    rows[[length(rows) + 1]] <- draw_one()");
@@ -485,7 +651,14 @@ function genSplit(cfg, names, lang) {
       sampler.push("}");
     } else {
       sampler.push("# A sample = n rows drawn through the pipeline");
-      sampler.push("draw_sample <- function(n) do.call(rbind, lapply(seq_len(n), function(i) draw_one()))");
+      if (hasPools) {
+        sampler.push("draw_sample <- function(n) {");
+        pools.forEach(p => sampler.push(`  ${p.name} <<- ${p.name}_template`));
+        sampler.push("  do.call(rbind, lapply(seq_len(n), function(i) draw_one()))");
+        sampler.push("}");
+      } else {
+        sampler.push("draw_sample <- function(n) do.call(rbind, lapply(seq_len(n), function(i) draw_one()))");
+      }
     }
     sampler.push("");
     sampler.push(`${cap} <- ${sampleSize}` + (until ? "   # safety cap (max draws)" : "   # sample size"));
@@ -504,8 +677,8 @@ function genSplit(cfg, names, lang) {
       collect.push(`N <- ${collectN(cfg)}${collectNote(cfg)}`);
       stats.forEach(({ id }) => collect.push(`${id} <- numeric(N)`));
       collect.push("for (i in 1:N) {");
-      collect.push(`  df <- draw_sample(${cap})`);
-      stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${rStatValue(s, names)}`));
+      collect.push(`  df <- draw_sample(${cap})`, "sampler");
+      stats.forEach(({ s, id }) => collect.push(`  ${id}[i] <- ${rStatValue(s, names)}`, "single"));
       collect.push("}");
       collect.push(`dist <- data.frame(${stats.map(({ id }) => id).join(", ")})`);
     }
@@ -514,12 +687,11 @@ function genSplit(cfg, names, lang) {
     const divR = dividerInfo(cfg, stats);
     if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
     else if (divR) {
-      inference.push("# Inference from the sampling distribution (divider)");
-      dividerExprs(`dist$${divR.id}`, divR, "r").forEach(t => inference.push(t));
+      const body = dividerBody(divR, "r", id => (emittedById[id] != null ? emittedById[id] : null), e => `dist$${e}`, null);
+      if (body) { inference.push("# Inference from the sampling distribution (divider)"); body.forEach(t => inference.push(t)); }
+      else inference.push("# Turn on the Divider tool on the Collect plot to generate inference code");
     } else {
-      inference.push("# Inference from the sampling distribution");
-      inference.push(`quantile(dist$${first.id}, c(0.025, 0.975))   # 95% percentile interval`);
-      inference.push(`mean(dist$${first.id} >= 0)                   # tail proportion — set your cutoff`);
+      inference.push("# Turn on the Divider tool on the Collect plot to generate inference code");
     }
     return { sampler, single, collect, inference };
   }
@@ -532,25 +704,33 @@ function genSplit(cfg, names, lang) {
   if (needsSm) sampler.push("import statsmodels.api as sm");
   sampler.push("");
   sampler.push("# Sampler — draw one row through the pipeline");
-  if (wor) sampler.push("# (a device draws without replacement in the tool; this code samples with replacement)");
   if (anySource(cfg)) sampler.push(`pop = pd.read_csv(${JSON.stringify(csvFile(cfg))})`);
-  sampler.push("def draw_one():");
-  pipeline.forEach(st => stageBlock(st, names, "py").forEach(t => sampler.push(t)));
+  if (hasPools) {
+    sampler.push("# Without-replacement pools — reset per sample, then drawn with removal");
+    if (until) sampler.push("# (a pool can empty before the stop rule holds; the safety cap bounds the draws)");
+    pools.forEach(p => sampler.push(tmplPy(p)));
+    sampler.push("");
+  }
+  sampler.push(hasPools ? "def draw_one(pools):" : "def draw_one():");
+  pipeline.forEach(st => stageBlock(st, names, "py", poolMap).forEach(t => sampler.push(t)));
   sampler.push("    return {" + pipeline.map(st => `${key(names[st.id])}: ${names[st.id]}`).join(", ") + "}");
   sampler.push("");
+  const drawCall = hasPools ? "draw_one(pools)" : "draw_one()";
   if (until) {
     sampler.push("# Draw rows until the stop rule holds (n varies), capped at max_draws");
     sampler.push("def draw_sample(max_draws):");
+    if (hasPools) sampler.push("    " + poolInitPy);
     sampler.push("    rows = []");
     sampler.push("    while True:");
-    sampler.push("        rows.append(draw_one())");
+    sampler.push(`        rows.append(${drawCall})`);
     sampler.push(`        if ${stopPredicate(stopRule, names, "rows", "py")}: break`);
     sampler.push("        if len(rows) >= max_draws: break");
     sampler.push("    return pd.DataFrame(rows)");
   } else {
     sampler.push("# A sample = n rows drawn through the pipeline");
     sampler.push("def draw_sample(n):");
-    sampler.push("    return pd.DataFrame([draw_one() for _ in range(n)])");
+    if (hasPools) sampler.push("    " + poolInitPy);
+    sampler.push(`    return pd.DataFrame([${drawCall} for _ in range(n)])`);
   }
   sampler.push("");
   sampler.push(`${cap} = ${sampleSize}` + (until ? "   # safety cap (max draws)" : "   # sample size"));
@@ -569,8 +749,8 @@ function genSplit(cfg, names, lang) {
     collect.push(`N = ${collectN(cfg)}${collectNote(cfg)}`);
     stats.forEach(({ id }) => collect.push(`${id} = []`));
     collect.push("for i in range(N):");
-    collect.push(`    df = draw_sample(${cap})`);
-    stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "df", "    ", e => `${id}.append(${e})`).forEach(t => collect.push(t)));
+    collect.push(`    df = draw_sample(${cap})`, "sampler");
+    stats.forEach(({ s, id }) => pyStatAssign(s, id, names, "df", "    ", e => `${id}.append(${e})`).forEach(t => collect.push(t, "single")));
     collect.push(`dist = pd.DataFrame({${stats.map(({ id }) => `${key(id)}: ${id}`).join(", ")}})`);
   }
 
@@ -578,12 +758,11 @@ function genSplit(cfg, names, lang) {
   const divP = dividerInfo(cfg, stats);
   if (!first) inference.push("# Enable a statistic, then collect samples, to do inference");
   else if (divP) {
-    inference.push("# Inference from the sampling distribution (divider)");
-    dividerExprs(`dist[${key(divP.id)}]`, divP, "py").forEach(t => inference.push(t));
+    const body = dividerBody(divP, "py", id => (emittedById[id] != null ? emittedById[id] : null), e => `dist[${key(e)}]`, null);
+    if (body) { inference.push("# Inference from the sampling distribution (divider)"); body.forEach(t => inference.push(t)); }
+    else inference.push("# Turn on the Divider tool on the Collect plot to generate inference code");
   } else {
-    inference.push("# Inference from the sampling distribution");
-    inference.push(`np.quantile(dist[${key(first.id)}], [0.025, 0.975])   # 95% percentile interval`);
-    inference.push(`(dist[${key(first.id)}] >= 0).mean()                  # tail proportion — set your cutoff`);
+    inference.push("# Turn on the Divider tool on the Collect plot to generate inference code");
   }
   return { sampler, single, collect, inference };
 }
@@ -595,31 +774,26 @@ function isSimple(cfg) {
   if (cfg.runMode === "until") return false;
   const forked = st => st.branches.length > 1 || st.branches.some(b => b.condVar !== null);
   if (p.some(forked)) return false;
-  return plainStats(cfg).every(singleColumn);
+  // Every tracked statistic the compact path can now compute: plain, group (condVar subset), and
+  // regression (slope/intercept via lm on vectors / statsmodels over `df`). So the only remaining
+  // split triggers are a fork or a run-until rule (both handled above).
+  return true;
 }
 
 // The inference lines for the compact path over the collected vectors, as [text, section]
 // pairs (shared by the distributed panel and the integrated view so they can't diverge).
 function compactInfLines(cfg, stats, lang) {
-  const out = [], first = stats[0], div = dividerInfo(cfg, stats);
+  const noDiv = [["# Turn on the Divider tool on the Collect plot to generate inference code", "inference"]];
+  const first = stats[0], div = dividerInfo(cfg, stats);
   if (!first) return [["# Enable a statistic, then collect samples, to do inference", "inference"]];
-  out.push([`# Inference from the sampling distribution${div ? " (divider)" : ""}`, "inference"]);
-  if (lang === "r") {
-    if (div) dividerExprs(div.id, div, "r").forEach(t => out.push([t, "inference"]));
-    else {
-      out.push([`quantile(${first.id}, c(0.025, 0.975))   # 95% percentile interval`, "inference"]);
-      out.push([`mean(${first.id} >= 0)                   # tail proportion — set your cutoff`, "inference"]);
-    }
-  } else {
-    const v = div ? div.id : first.id;
-    out.push([`${v} = np.array(${v})`, "inference"]);
-    if (div) dividerExprs(div.id, div, "py").forEach(t => out.push([t, "inference"]));
-    else {
-      out.push([`np.quantile(${first.id}, [0.025, 0.975])   # 95% percentile interval`, "inference"]);
-      out.push([`(${first.id} >= 0).mean()                  # tail proportion — set your cutoff`, "inference"]);
-    }
-  }
-  return out;
+  if (!div) return noDiv;
+  // Compact: the collected statistics are bare vectors (`mean_x`, …); for Python convert to numpy
+  // arrays first so the vectorized comparisons work. A derived divider is built from its operands.
+  const emittedById = {}; stats.forEach(({ s, id }) => emittedById[s.id] = id);
+  const body = dividerBody(div, lang, id => (emittedById[id] != null ? emittedById[id] : null),
+    e => e, lang === "py" ? e => [`${e} = np.array(${e})`] : null);
+  if (!body) return noDiv;
+  return [["# Inference from the sampling distribution (divider)", "inference"], ...body.map(t => [t, "inference"])];
 }
 
 // One runnable program with per-line `section` tags driving the color-coded gutter. In the
@@ -630,20 +804,19 @@ function genIntegrated(cfg, names, lang) {
   const L = [], push = (text, section) => L.push({ text, section });
   if (isSimple(cfg)) {
     const ind = lang === "r" ? "  " : "    ";
-    const wor = cfg.pipeline.some(st => outcomeSpec(defDevice(st)).replace === false);
-    if (lang === "py") { push("import pandas as pd", "sampler"); push("import numpy as np", "sampler"); push("", "sampler"); }
+    if (lang === "py") { push("import pandas as pd", "sampler"); push("import numpy as np", "sampler"); if (compactNeedsSm(stats)) push("import statsmodels.api as sm", "sampler"); push("", "sampler"); }
     push("# Set up the sampler", "sampler");
-    if (wor) push("# (a device draws without replacement; this code samples with replacement)", "sampler");
-    if (anySource(cfg)) push(lang === "r" ? `df <- read.csv(${JSON.stringify(csvFile(cfg))})` : `df = pd.read_csv(${JSON.stringify(csvFile(cfg))})`, "sampler");
+    if (anySource(cfg)) push(lang === "r" ? `df <- read.csv(${JSON.stringify(csvFile(cfg))})` : `pop = pd.read_csv(${JSON.stringify(csvFile(cfg))})`, "sampler");
     push(lang === "r" ? `n <- ${cfg.sampleSize}` : `n = ${cfg.sampleSize}`, "sampler");
-    if (lang === "py") cfg.pipeline.forEach(st => { const dev = defDevice(st); if (!devSource(dev)) push(`pop_${names[st.id]} = pd.Series(${vec(outcomeSpec(dev).labels, "py")})`, "sampler"); });
+    if (lang === "py") cfg.pipeline.forEach(st => { const pd = popDefPy(names[st.id], defDevice(st)); if (pd) push(pd, "sampler"); });
     if (!stats.length) { push("# Enable a statistic (click a value on the plot) to collect a distribution", "collect"); return L; }
     push(lang === "r" ? `N <- ${collectN(cfg)}${collectNote(cfg)}` : `N = ${collectN(cfg)}${collectNote(cfg)}`, "collect");
     stats.forEach(({ id }) => push(lang === "r" ? `${id} <- numeric(N)` : `${id} = []`, "collect"));
     push(lang === "r" ? "for (i in 1:N) {" : "for i in range(N):", "collect");
-    cfg.pipeline.forEach(st => push(ind + drawVec(names[st.id], defDevice(st), lang), "sampler"));
+    if (lang === "r") cfg.pipeline.forEach(st => push(ind + drawVec(names[st.id], defDevice(st), "r"), "sampler"));
+    else push(ind + dfLinePy(cfg, names), "sampler");
     stats.forEach(({ s, id }) => {
-      const e = vStat(s, names[s.variable], lang);
+      const e = compactStatExpr(s, names, lang);
       push(ind + (lang === "r" ? `${id}[i] <- ${e}` : `${id}.append(${e})`), "single");
     });
     if (lang === "r") push("}", "collect");
