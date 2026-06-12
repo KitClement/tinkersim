@@ -1,4 +1,4 @@
-# TinkerSim — Project Guide for Claude Code
+# PRISM — Project Guide for Claude Code
 
 A browser-based probability **sampler & simulation** tool for undergraduate statistics
 education, modeled on TinkerPlots. Single-page React app.
