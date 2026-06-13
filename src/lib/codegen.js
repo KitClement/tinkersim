@@ -231,24 +231,29 @@ function derivedExprCode(tokens, refOf, lang) {
 // dist['x'] split); `emittedOf(id)` maps a tracked stat-id to its emitted name (or null);
 // `arrayize(e)` (py compact only) turns a collected list into a numpy array. Returns string[] of
 // lines, or null when the divider sits on something we can't emit (derived with a missing operand).
-function dividerBody(div, lang, emittedOf, vecRef, arrayize) {
+// Resolve a divider/overlay spec ({ id } | { derived }) to its target vector reference plus any
+// setup lines: py list→array conversions, and — for a derived column — its definition built from
+// the operand vectors. Returns { setup, target } or null when an operand can't be emitted.
+function resolveTarget(spec, lang, emittedOf, vecRef, arrayize) {
   const setup = [], done = new Set();
   const azOnce = e => { if (!arrayize || done.has(e)) return; done.add(e); setup.push(...arrayize(e)); };
-  let target;
-  if (div.derived) {
-    const colIds = (div.derived.tokens || []).filter(t => t.k === "col").map(t => t.id);
+  if (spec.derived) {
+    const colIds = (spec.derived.tokens || []).filter(t => t.k === "col").map(t => t.id);
     for (const id of colIds) if (emittedOf(id) == null) return null;
     colIds.forEach(id => azOnce(emittedOf(id)));
-    const expr = derivedExprCode(div.derived.tokens, id => { const e = emittedOf(id); return e == null ? null : vecRef(e); }, lang);
+    const expr = derivedExprCode(spec.derived.tokens, id => { const e = emittedOf(id); return e == null ? null : vecRef(e); }, lang);
     if (expr == null) return null;
-    const vn = safeVarName(div.derived.name);   // the column's name → a valid identifier (else "derived")
+    const vn = safeVarName(spec.derived.name);   // the column's name → a valid identifier (else "derived")
     setup.push((lang === "r" ? vn + " <- " : vn + " = ") + expr + "   # the plotted derived column");
-    target = vn;
-  } else {
-    azOnce(div.id);
-    target = vecRef(div.id);
+    return { setup, target: vn };
   }
-  return [...setup, ...dividerExprs(target, div, lang)];
+  azOnce(spec.id);
+  return { setup, target: vecRef(spec.id) };
+}
+function dividerBody(div, lang, emittedOf, vecRef, arrayize) {
+  const r = resolveTarget(div, lang, emittedOf, vecRef, arrayize);
+  if (!r) return null;
+  return [...r.setup, ...dividerExprs(r.target, div, lang)];
 }
 // The plot-overlay summaries (boxplot / mean / ±1 SD on the Collect plot) the host reports via
 // `cfg.overlays` ({ statId, mean, sd, box } | null), resolved to the matched enabled stat. Skipped
@@ -256,19 +261,27 @@ function dividerBody(div, lang, emittedOf, vecRef, arrayize) {
 function overlayInfo(cfg, stats) {
   const o = cfg.overlays;
   if (!o || o.statId == null || !(o.mean || o.sd || o.box)) return null;
+  const flags = { mean: !!o.mean, sd: !!o.sd, box: !!o.box };
   const match = stats.find(({ s }) => s.id === o.statId);
-  if (!match) return null;
-  return { id: match.id, mean: !!o.mean, sd: !!o.sd, box: !!o.box };
+  if (match) return { ...flags, id: match.id };
+  // A derived column is plotted (e.g. a difference of means): summarize it from its operands,
+  // exactly as the divider does (which must be enabled plain stats).
+  const der = (cfg.trackedStats || []).find(s => s && s.kind === "derived" && s.id === o.statId);
+  if (der) return { ...flags, derived: der };
+  return null;
 }
-// Overlay lines over the target stat's collected vector `vecRef(id)`. fivenum (R) / .describe() (py)
-// give the five-number summary; SD is population (matches the tool and the `sd` statistic). np.mean /
-// np.std / pd.Series all accept a bare list, so the compact path needs no array conversion here.
-function overlayBody(ov, lang, vecRef) {
-  const v = vecRef(ov.id), R = lang === "r", out = [];
+// Overlay lines over the target stat's collected vector. fivenum (R) / .describe() (py) give the
+// five-number summary; SD is population (matches the tool and the `sd` statistic). A plain stat's
+// bare list is accepted by np.mean / np.std / pd.Series directly; a derived column is built from its
+// operands first via `resolveTarget` (which arrayizes them in the py compact path so arithmetic works).
+function overlayBody(ov, lang, emittedOf, vecRef, arrayize) {
+  const r = resolveTarget(ov, lang, emittedOf, vecRef, arrayize);
+  if (!r) return null;
+  const v = r.target, R = lang === "r", out = [];
   if (ov.mean) out.push((R ? `mean(${v})` : `np.mean(${v})`) + "   # center of the sampling distribution");
   if (ov.sd)   out.push((R ? `sqrt(mean((${v} - mean(${v}))^2))` : `np.std(${v})`) + "   # spread (population SD)");
   if (ov.box)  out.push((R ? `fivenum(${v})` : `pd.Series(${v}).describe().loc[['min', '25%', '50%', '75%', 'max']]`) + "   # five-number summary");
-  return out.length ? out : null;
+  return out.length ? [...r.setup, ...out] : null;
 }
 // Assemble the whole inference section over the collected vectors: the divider's inference (if its
 // tool is on) plus the plot-overlay summaries (if any are on) — both can appear. `vecRef(name)`
@@ -285,7 +298,9 @@ function inferenceBody(cfg, stats, lang, vecRef, arrayize) {
   }
   const ov = overlayInfo(cfg, stats);
   if (ov) {
-    const body = overlayBody(ov, lang, vecRef);
+    // A plain stat's vector is summarized directly (no array conversion); a derived column needs
+    // its operands arrayized (py compact) to do arithmetic, like the divider.
+    const body = overlayBody(ov, lang, emittedOf, vecRef, ov.derived ? arrayize : null);
     if (body) { out.push("# Summary of the sampling distribution (plot overlays)"); body.forEach(t => out.push(t)); }
   }
   return out;

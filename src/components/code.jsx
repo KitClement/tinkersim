@@ -110,16 +110,23 @@ export function CodeIntegrated({ lines, cbMode, dark }) {
 // narrow screens via flex-wrap. When `lines` is absent (code off) the tool spans full width
 // with no layout change at all.
 export function CodeBeside({ children, sectionId, lines, cbMode }) {
-  if (!lines) return children;
+  // Always render the same wrapper so toggling code on/off never changes the element type at
+  // this tree position. Returning children bare when off but wrapped when on would make React
+  // unmount/remount the tool — and its Plot would lose all internal state (selected vars,
+  // overlays, divider, ruler). With a stable wrapper the tool stays mounted; only the CodeBox
+  // slot beside it appears/disappears. When off, the tool column flexes to full width, so the
+  // layout matches the old bare-children version.
   // flex-basis sums to ~580px (+gap), so the two columns sit side by side on a tablet/laptop
   // and wrap (code directly below) only on a genuinely narrow ~<620px viewport. The tool gets
   // the larger grow share so devices/plots keep room; the code box can scroll horizontally.
   return (
     <div style={{ display:"flex", gap:14, flexWrap:"wrap", alignItems:"flex-start" }}>
-      <div style={{ flex:"2 1 300px", minWidth:0 }}>{children}</div>
-      <div style={{ flex:"1 1 280px", minWidth:0 }}>
-        <CodeBox sectionId={sectionId} lines={lines} cbMode={cbMode} />
-      </div>
+      <div style={{ flex: lines ? "2 1 300px" : "1 1 100%", minWidth:0 }}>{children}</div>
+      {lines && (
+        <div style={{ flex:"1 1 280px", minWidth:0 }}>
+          <CodeBox sectionId={sectionId} lines={lines} cbMode={cbMode} />
+        </div>
+      )}
     </div>
   );
 }
