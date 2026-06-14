@@ -23,17 +23,44 @@ function Glyph({ symbol, color, size = 14 }) {
 function CopyButton({ text }) {
   const [done, setDone] = useState(false);
   const copy = () => {
-    const announce = () => { setDone(true); setTimeout(() => setDone(false), 1400); };
-    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(announce).catch(() => {});
-    else announce();
+    const announce = () => { setDone(true); setTimeout(() => setDone(false), 1800); };
+    // Synchronous fallback for when the async Clipboard API is unavailable or rejects (e.g.
+    // an insecure context or a missing user-gesture) — keeps copy + the confirmation working.
+    const fallback = () => {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        document.execCommand("copy"); document.body.removeChild(ta);
+        announce();
+      } catch { /* give up silently */ }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(announce).catch(fallback);
+    else fallback();
   };
   return (
-    <button onClick={copy} title="Copy this code"
-      style={{ background:"var(--surface)", border:"1px solid rgba(0,0,0,0.12)", color:"var(--text-2)",
-        borderRadius:5, fontSize:11, fontWeight:600, padding:"2px 8px", cursor:"pointer", whiteSpace:"nowrap",
-        boxShadow:"0 1px 2px rgba(0,0,0,0.08)" }}>
-      {done ? "✓ Copied" : "⧉ Copy"}
-    </button>
+    <span style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
+      {/* Confirmation to the left of the button. `role="status"` makes it a polite live
+          region so screen readers announce the copy; the surface pill keeps it legible over
+          the header's colored gradient. */}
+      <span role="status" aria-live="polite" style={{
+        fontSize:11, fontWeight:700, whiteSpace:"nowrap", color:"var(--green-ink)",
+        background: done ? "var(--surface)" : "transparent",
+        border: done ? "1px solid var(--border-2)" : "1px solid transparent",
+        borderRadius:5, padding: done ? "2px 7px" : 0,
+        boxShadow: done ? "0 1px 2px rgba(0,0,0,0.08)" : "none",
+        opacity: done ? 1 : 0, transition:"opacity 0.15s" }}>
+        {done ? "✓ Copied to clipboard" : ""}
+      </span>
+      {/* Button label stays stable ("Copy"); the role="status" pill above is the single
+          confirmation (announced once to screen readers, no accessible-name churn). */}
+      <button onClick={copy} title="Copy this code"
+        style={{ background:"var(--surface)", border:"1px solid rgba(0,0,0,0.12)", color:"var(--text-2)",
+          borderRadius:5, fontSize:11, fontWeight:600, padding:"2px 8px", cursor:"pointer", whiteSpace:"nowrap",
+          boxShadow:"0 1px 2px rgba(0,0,0,0.08)" }}>
+        ⧉ Copy
+      </button>
+    </span>
   );
 }
 
@@ -49,9 +76,11 @@ export function CodeBox({ sectionId, lines, cbMode }) {
       <div style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 10px",
         background:`linear-gradient(90deg, var(--surface) 0%, var(--surface) 42%, ${color} 100%)` }}>
         <span style={{ fontSize:13, fontWeight:700, color:"var(--text)" }}>{section.title}</span>
+        {/* Symbol pinned to the right (colored) corner; the Copy button sits to its left so the
+            "Copied" confirmation expands into the title's flexible space and the symbol stays put. */}
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:10 }}>
-          <Glyph symbol={section.symbol} color="#fff" size={26} />
           <CopyButton text={text} />
+          <Glyph symbol={section.symbol} color="#fff" size={26} />
         </div>
       </div>
       <pre style={{ margin:0, padding:"8px 10px", fontFamily:MONO, fontSize:11.5, lineHeight:1.5,

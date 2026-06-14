@@ -4,6 +4,20 @@ const uid = () => Math.random().toString(36).slice(2, 9);
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const COLORS = ["#e74c3c","#3498db","#2ecc71","#f39c12","#9b59b6","#1abc9c","#e67e22","#e91e63","#00bcd4","#607d8b","#8bc34a","#ff5722"];
+// Color-blind-friendly qualitative palette for plot category colors when the "Color-blind"
+// mode is on. Chosen for CVD distinguishability AND ≥3:1 contrast against the white plot
+// background (1.4.11), spreading across blue/orange/teal/purple with lightness variation so
+// hues remain separable under protan/deutan/tritan vision.
+const COLORS_CB = ["#1f78b4","#e66101","#1b9e77","#d01c8b","#5e3c99","#0072b2","#b2182b","#01665e","#762a83","#8c510a","#35978f","#444444"];
+
+// The active category palette is a module-level switch rather than a threaded prop. App is the
+// single state owner, so it calls `setColorBlindPalette(cbMode)` on every render — always before
+// the plots that read this — keeping the value current without prop-drilling through every plot.
+// `colorAt(i)` is the single accessor plots use to color category i.
+let _cbPalette = false;
+const setColorBlindPalette = on => { _cbPalette = !!on; };
+const activePalette = () => (_cbPalette ? COLORS_CB : COLORS);
+const colorAt = i => { const p = activePalette(); return p[((i % p.length) + p.length) % p.length]; };
 
 function parseCSV(text) {
   // Simple CSV parser handling quoted fields and commas
@@ -153,4 +167,4 @@ function nextItemLabel(labels) {
   return `New${k}`;
 }
 
-export { uid, clamp, sleep, COLORS, parseCSV, fitDotR, parseTimeToMinutes, minutesToTime, toNum, colKind, OTHER_CAT, collapseCats, nextItemLabel };
+export { uid, clamp, sleep, COLORS, COLORS_CB, colorAt, setColorBlindPalette, parseCSV, fitDotR, parseTimeToMinutes, minutesToTime, toNum, colKind, OTHER_CAT, collapseCats, nextItemLabel };

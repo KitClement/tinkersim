@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { iSm, btnNav, ctrlLbl } from "./lib/styles";
-import { uid, parseCSV } from "./lib/util";
+import { uid, parseCSV, setColorBlindPalette } from "./lib/util";
 import { computeStat, statLabel, statKey, NUMERIC_FNS } from "./lib/stats";
 import { colLabel, exprLabel, computeStatRow, evalExpr } from "./lib/expr";
 import { drawSample, stageVarKind, stageOutcomes, mkStage, migratePipeline, rekeyStats, rekeyStopRule, mkSpinner, mkStacks, mkMixer, runAnimatedSample } from "./lib/sampling";
@@ -24,6 +24,8 @@ export default function App() {
   // CSV / EDA dataset
   const [dataset, setDataset] = useState(null); // { headers, rows, name }
   const [edaOpen, setEdaOpen] = useState(true);
+  const csvInputRef = useRef(null);              // keyboard-reachable Upload CSV trigger (a11y)
+  const [liveMsg, setLiveMsg] = useState("");    // polite screen-reader announcements (a11y)
 
   const [pipeline, setPipeline] = useState(() => [mkStage(mkStacks(1))]);
   const [sampleSize, setSampleSize] = useState(10);
@@ -37,6 +39,9 @@ export default function App() {
   const [codeLang, setCodeLang] = useState("off");
   // Color-blind palette for the code-section symbols (Task E): red→black, green→gray.
   const [cbMode, setCbMode] = useState(false);
+  // Drive the module-level plot category palette (lib/util) from cbMode. Set during render so
+  // the plots below — which read it via colorAt(i) — pick up the change in the same pass.
+  setColorBlindPalette(cbMode);
   // Dark mode. Initialized from the attribute main.jsx set (pre-paint, from localStorage);
   // toggling repaints via CSS variables and persists the choice.
   const [dark, setDark] = useState(() => { try { return document.documentElement.dataset.theme === "dark"; } catch { return false; } });
@@ -642,6 +647,18 @@ export default function App() {
     a.download = name; a.click();
   };
 
+  // Polite screen-reader announcements (4.1.3): when a draw or a batch collection
+  // finishes, mirror the visual result into the aria-live region near the page top.
+  const prevSampling = useRef(false), prevCollecting = useRef(false);
+  useEffect(() => {
+    if (prevSampling.current && !sampling && sampleData.length) setLiveMsg("Sample complete — " + sampleData.length + " draws.");
+    prevSampling.current = sampling;
+  }, [sampling, sampleData.length]);
+  useEffect(() => {
+    if (prevCollecting.current && !batchCollecting) setLiveMsg("Collection complete — " + collectRows.length + " rows collected.");
+    prevCollecting.current = batchCollecting;
+  }, [batchCollecting, collectRows.length]);
+
   // Generated R/Python code (Task E), recomputed from the live config. `null` when the code
   // toggle is off so each `CodeBeside` falls back to a no-layout-cost full-width tool. Each
   // section is placed next to the tool it mirrors (sampler / sample-results / collect-table /
@@ -653,9 +670,13 @@ export default function App() {
 
   return (
     <div style={{ fontFamily:"'IBM Plex Sans',system-ui,sans-serif", background:"var(--bg)", minHeight:"100vh", padding:14, boxSizing:"border-box" }}>
+     {/* Keyboard skip link (2.4.1) — first focusable element; visually hidden until focused. */}
+     <a href="#main-content" className="skip-link sr-only">Skip to main content</a>
+     {/* Polite live region (4.1.3) — announces draw/collection completion to screen readers. */}
+     <div aria-live="polite" className="sr-only">{liveMsg}</div>
      {/* Content is capped and centered so the app doesn't sprawl on very wide monitors;
          the gray background still fills the viewport. */}
-     <div style={{ maxWidth:1600, margin:"0 auto" }}>
+     <main id="main-content" style={{ maxWidth:1600, margin:"0 auto" }}>
       {/* Header */}
       <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14, flexWrap:"wrap" }}>
         <div style={{ display:"inline-flex", flexDirection:"column", gap:2, width:"fit-content" }}>
@@ -663,8 +684,10 @@ export default function App() {
               tagline's nowrap width sizes the column; the logo fills that width via the
               width:0 / min-width:100% trick (so its large intrinsic size doesn't inflate the
               column) with height:auto keeping the aspect ratio — image matches the text below. */}
-          <img src={cbMode ? prismLogoCb : prismLogo} alt="PRISM"
-            style={{ width:0, minWidth:"100%", height:"auto", display:"block" }} />
+          <h1 style={{ margin:0, padding:0, lineHeight:0 }}>
+            <img src={cbMode ? prismLogoCb : prismLogo} alt="PRISM"
+              style={{ width:0, minWidth:"100%", height:"auto", display:"block" }} />
+          </h1>
           <p style={{ margin:0, fontSize:11, color:"var(--text-3)", whiteSpace:"nowrap" }}>Python &amp; R Integrated Simulation Machine</p>
         </div>
         {/* Code-panel controls live at the top-right of the whole page; each section's code
@@ -683,17 +706,20 @@ export default function App() {
       {/* ── CSV / EDA STAGE ── */}
       <div style={{ background:"var(--surface)", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)" }}>
         <div style={{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap", marginBottom: edaOpen ? 12 : 0 }}>
-          <button onClick={() => setEdaOpen(o => !o)}
-            style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, fontWeight:700, color:"var(--text)", display:"flex", alignItems:"center", gap:6 }}>
-            <span style={{ transform: edaOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
-            Data &amp; Exploratory Analysis
-          </button>
+          <h2 style={{ margin:0 }}>
+            <button onClick={() => setEdaOpen(o => !o)} aria-expanded={edaOpen}
+              style={{ background:"none", border:"none", cursor:"pointer", fontSize:13, fontWeight:700, color:"var(--text)", display:"flex", alignItems:"center", gap:6 }}>
+              <span style={{ transform: edaOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
+              Data &amp; Exploratory Analysis
+            </button>
+          </h2>
           {dataset && <span style={{ fontSize:11, color:"var(--text-3)" }}>{dataset.name} · {dataset.rows.length} rows · {dataset.headers.length} cols</span>}
-          <label style={{ marginLeft:"auto", ...btnNav, fontSize:12, cursor:"pointer", display:"inline-flex", alignItems:"center", gap:5 }}>
-            Upload CSV
-            <input type="file" accept=".csv,text/csv" style={{ display:"none" }}
-              onChange={e => { const f = e.target.files && e.target.files[0]; if (f) handleCSVFile(f); }} />
-          </label>
+          {/* Upload CSV — a real <button> drives a hidden file input via ref so the picker is
+              keyboard-reachable (a bare <label> wrapping display:none is not focusable). */}
+          <input ref={csvInputRef} type="file" accept=".csv,text/csv" className="sr-only" tabIndex={-1}
+            onChange={e => { const f = e.target.files && e.target.files[0]; if (f) handleCSVFile(f); e.target.value = ""; }} />
+          <button onClick={() => csvInputRef.current && csvInputRef.current.click()}
+            style={{ marginLeft:"auto", ...btnNav, fontSize:12 }}>Upload CSV</button>
           <button onClick={startManualData} style={{ ...btnNav, fontSize:12 }}>Enter data manually</button>
           {dataset && <button onClick={() => setDataset(null)} style={{ ...btnNav, fontSize:12 }}>✕ Clear</button>}
         </div>
@@ -719,7 +745,7 @@ export default function App() {
       <div style={{ background:"var(--surface)", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)" }}>
        <CodeBeside sectionId="sampler" lines={concealed ? null : (code && code.sampler)} cbMode={cbMode}>
         <div style={{ display:"flex", gap:8, marginBottom:10, alignItems:"center", flexWrap:"wrap" }}>
-          <span style={{ fontSize:14, fontWeight:700, color:"var(--text)" }}>Sampler</span>
+          <h2 style={{ margin:0, fontSize:14, fontWeight:700, color:"var(--text)" }}>Sampler</h2>
           {concealed ? (
             <>
               <span style={{ fontSize:12, color:"#7c3aed", fontWeight:700, display:"inline-flex", alignItems:"center", gap:5 }}>🔒 Hidden sampler — contents concealed</span>
@@ -745,13 +771,14 @@ export default function App() {
           <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:1 }}>
               <input type="range" min={0} max={2} step={1} value={concealed ? 2 : animSpeed} disabled={concealed}
+                aria-label="Animation speed" aria-valuetext={["Slow", "Fast", "Instant"][concealed ? 2 : animSpeed]}
                 title={concealed ? "Hidden samplers run instantly until revealed" : undefined}
                 onChange={e => setAnimSpeed(+e.target.value)} style={{ width:80, accentColor:"#6366f1", opacity:concealed?0.5:1, cursor:concealed?"not-allowed":"pointer" }} />
               <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"var(--text-faint)", width:80 }}>
                 <span>slow</span><span>fast</span><span>instant</span>
               </div>
             </div>
-            <select value={runMode} onChange={e => changeRunMode(e.target.value)} disabled={sampling} style={iSm}>
+            <select value={runMode} onChange={e => changeRunMode(e.target.value)} disabled={sampling} style={iSm} aria-label="Run mode">
               <option value="fixed">Repeat n</option>
               <option value="until">Run until…</option>
             </select>
@@ -763,18 +790,18 @@ export default function App() {
               </label>
             ) : (
               <>
-                <select value={stopRule ? stopRule.stageId : ""} disabled={sampling}
+                <select value={stopRule ? stopRule.stageId : ""} disabled={sampling} aria-label="Stop when this variable"
                   onChange={e => changeStopRule({ stageId: e.target.value })} style={iSm}>
                   {pipeline.map(s => <option key={s.id} value={s.id}>{nameOf(s.id)}</option>)}
                 </select>
-                <select value={stopRule ? stopRule.kind : "outcome"} disabled={sampling}
+                <select value={stopRule ? stopRule.kind : "outcome"} disabled={sampling} aria-label="Stop condition"
                   onChange={e => changeStopRule({ kind: e.target.value })} style={iSm}>
                   <option value="outcome">reaches</option>
                   <option value="count">reaches N times</option>
                   <option value="distinct">has N distinct</option>
                 </select>
                 {stopRule && stopRule.kind !== "distinct" && (
-                  <select value={stopRule.value != null ? stopRule.value : ""} disabled={sampling}
+                  <select value={stopRule.value != null ? stopRule.value : ""} disabled={sampling} aria-label="Stop value"
                     onChange={e => changeStopRule({ value: e.target.value })} style={iSm}>
                     {stopStageOutcomes.map(o => <option key={o} value={o}>{o}</option>)}
                   </select>
@@ -842,7 +869,7 @@ export default function App() {
       <div style={{ background:"var(--surface)", borderRadius:14, padding:14, marginBottom:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)", opacity:sampleData.length ? 1 : 0.4, transition:"opacity 0.3s" }}>
        <CodeBeside sectionId="single" lines={code && code.single} cbMode={cbMode}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
-          <span style={{ fontSize:14, fontWeight:700, color:"var(--text)" }}>Sample Results</span>
+          <h2 style={{ margin:0, fontSize:14, fontWeight:700, color:"var(--text)" }}>Sample Results</h2>
           {sampleData.length > 0 && <span style={{ fontSize:11, color:"var(--text-3)" }}>n = {sampleData.length}</span>}
         </div>
         <SampleResults sampleData={sampleData} varNames={varIds} varKinds={varKinds} nameOf={nameOf} onTrackStat={trackStat} onTrackDiff={trackDifference} trackedStats={trackedStats} />
@@ -852,7 +879,7 @@ export default function App() {
       {/* Collect Statistics */}
       <div style={{ background:"var(--surface)", borderRadius:14, padding:14, boxShadow:"0 1px 6px var(--shadow-sm)", border:"1px solid var(--border)", opacity:sampleData.length ? 1 : 0.35, pointerEvents:sampleData.length ? "auto" : "none", transition:"opacity 0.3s" }}>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:12, flexWrap:"wrap" }}>
-          <span style={{ fontSize:14, fontWeight:700, color:"var(--text)" }}>Collect Statistics</span>
+          <h2 style={{ margin:0, fontSize:14, fontWeight:700, color:"var(--text)" }}>Collect Statistics</h2>
           <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
             <label style={ctrlLbl}>Collect
               <NumInput value={batchSize} min={1} max={100000} round={0}
@@ -888,7 +915,7 @@ export default function App() {
             (e.g. a difference of two means, or an ANOVA-style total variation). */}
         {operandCols.length > 0 && (
           <div style={{ borderTop:"1px solid var(--border)", paddingTop:10, marginBottom:14 }}>
-            <button onClick={() => setDerivedOpen(o => !o)}
+            <button onClick={() => setDerivedOpen(o => !o)} aria-expanded={derivedOpen}
               style={{ background:"none", border:"none", cursor:"pointer", fontSize:11, fontWeight:700, color:"var(--text-faint)", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
               <span style={{ transform: derivedOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
               Build a derived statistic
@@ -907,7 +934,7 @@ export default function App() {
         {/* Manual statistic builder — advanced, hidden behind a toggle. Adds a column
             to the same tracked-stat table above instead of a separate workflow. */}
         <div style={{ borderTop:"1px solid var(--border)", paddingTop:10, marginBottom:14 }}>
-          <button onClick={() => setManualOpen(o => !o)}
+          <button onClick={() => setManualOpen(o => !o)} aria-expanded={manualOpen}
             style={{ background:"none", border:"none", cursor:"pointer", fontSize:11, fontWeight:700, color:"var(--text-faint)", letterSpacing:1, textTransform:"uppercase", display:"flex", alignItems:"center", gap:6, padding:0 }}>
             <span style={{ transform: manualOpen ? "rotate(90deg)" : "none", transition:"transform 0.15s", display:"inline-block" }}>▶</span>
             Define a statistic manually
@@ -951,7 +978,7 @@ export default function App() {
           </div>
         )}
       </div>
-     </div>
+     </main>
     </div>
   );
 }

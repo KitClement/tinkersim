@@ -23,13 +23,16 @@ function InlineEdit({ value, onChange, style = {} }) {
       onChange={e => setVal(e.target.value)}
       onBlur={() => { setEditing(false); onChange(val); }}
       onKeyDown={e => { if (e.key === "Enter" || e.key === "Escape") { setEditing(false); onChange(val); } }}
-      style={{ border:"1px solid #6366f1", borderRadius:3, padding:"1px 4px", fontSize:"inherit", outline:"none", width:"100%", background:"var(--surface)", color:"var(--text)", ...style }} />
+      style={{ border:"1px solid #6366f1", borderRadius:3, padding:"1px 4px", fontSize:"inherit", width:"100%", background:"var(--surface)", color:"var(--text)", ...style }} />
   );
   return (
-    <span onClick={() => setEditing(true)}
-      style={{ cursor:"text", borderBottom:"1px dashed var(--border-2)", minWidth:20, display:"inline-block", ...style }}>
+    <button type="button" onClick={() => setEditing(true)}
+      aria-label={"Edit name" + (value ? ": " + value : "")}
+      style={{ font:"inherit", color:"inherit", background:"none", border:"none",
+        padding:0, textAlign:"left", cursor:"text",
+        borderBottom:"1px dashed var(--border-2)", minWidth:20, display:"inline-block", ...style }}>
       {value || <span style={{ color:"var(--text-faint)" }}>…</span>}
-    </span>
+    </button>
   );
 }
 

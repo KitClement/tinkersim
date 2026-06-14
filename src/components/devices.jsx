@@ -211,7 +211,9 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
 
   return (
     <div>
-      <svg ref={svgRef} viewBox="-1.15 -1.15 2.3 2.3" style={{ width:"100%", maxWidth:160, display:"block", margin:"0 auto" }}>
+      <svg ref={svgRef} viewBox="-1.15 -1.15 2.3 2.3" role="img"
+        aria-label={"Spinner: " + device.slices.map(s => (s.label || "slice") + " " + Math.round(s.pct) + "%").join(", ")}
+        style={{ width:"100%", maxWidth:160, display:"block", margin:"0 auto" }}>
         {displaySlices.map((sl, i) => {
           const sweep = (sl.pct / dispTotal) * 360;
           const x1 = Math.cos(rad(cumAngle)), y1 = Math.sin(rad(cumAngle));
@@ -258,7 +260,7 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
       <div style={{ display:"flex", flexDirection:"column", gap:3, marginTop:6 }}>
         {device.slices.map((sl, i) => (
           <div key={sl.id} style={{ display:"flex", alignItems:"center", gap:3 }}>
-            <input type="color" value={sl.color}
+            <input type="color" value={sl.color} aria-label={"Color for " + (sl.label || "slice")}
               onChange={e => { const s = [...device.slices]; s[i] = { ...s[i], color:e.target.value }; onChange({ ...device, slices:s }); }}
               style={{ width:20, height:20, border:"none", padding:0, cursor:"pointer", borderRadius:3, flexShrink:0 }} />
             <div style={{ flex:1, fontSize:12 }}>
@@ -268,7 +270,7 @@ function SpinnerDevice({ device, onChange, animState, onSpinReady }) {
             <PctInput pct={sl.pct}
               onCommit={p => onChange({ ...device, slices: redistribute(device.slices, i, p) })} />
             <span style={{ fontSize:10, color:"var(--text-faint)" }}>%</span>
-            <button disabled={device.slices.length <= 1}
+            <button disabled={device.slices.length <= 1} aria-label={"Remove outcome " + (sl.label || "slice")}
               onClick={() => onChange({ ...device, slices: removeSlice(device.slices, i) })} style={btnX}>×</button>
           </div>
         ))}
@@ -546,7 +548,7 @@ function StacksDevice({ device, onChange, animState, dataset }) {
       <div style={{ display:"flex", flexDirection:"column", gap:3, maxHeight:110, overflowY:"auto" }}>
         {device.items.map((it, i) => (
           <div key={it.id} style={{ display:"flex", alignItems:"center", gap:3 }}>
-            <input type="color" value={it.color}
+            <input type="color" value={it.color} aria-label={"Color for " + (it.label || "category")}
               onChange={e => { const items = [...device.items]; items[i] = { ...items[i], color:e.target.value }; onChange({ ...device, items }); }}
               style={{ width:20, height:20, border:"none", padding:0, cursor:"pointer", borderRadius:3, flexShrink:0 }} />
             <div style={{ flex:1, fontSize:12 }}>
@@ -556,7 +558,7 @@ function StacksDevice({ device, onChange, animState, dataset }) {
             <NumInput value={it.count} min={0} max={MAX_CT} round={0}
               onChange={v => { const items = [...device.items]; items[i] = { ...items[i], count:Math.max(0, Math.round(v)) }; editClear({ ...device, items }); }}
               style={{ ...iSm, width:42 }} />
-            <button onClick={() => editClear({ ...device, items:device.items.filter((_, j) => j !== i) })} style={btnX}>×</button>
+            <button onClick={() => editClear({ ...device, items:device.items.filter((_, j) => j !== i) })} style={btnX} aria-label={"Remove outcome " + (it.label || "category")}>×</button>
           </div>
         ))}
       </div>
@@ -744,7 +746,7 @@ function MixerDevice({ device, onChange, animState, dataset }) {
       <div style={{ display:"flex", flexDirection:"column", gap:3, maxHeight:120, overflowY:"auto" }}>
         {grouped.map(group => (
           <div key={group.label} style={{ display:"flex", alignItems:"center", gap:3 }}>
-            <input type="color" value={group.color}
+            <input type="color" value={group.color} aria-label={"Color for " + (group.label || "ball")}
               onChange={e => { const balls = device.balls.map(b => b.label === group.label ? { ...b, color:e.target.value } : b); onChange({ ...device, balls }); }}
               style={{ width:20, height:20, border:"none", padding:0, cursor:"pointer", borderRadius:3, flexShrink:0 }} />
             <div style={{ flex:1, fontSize:12 }}>
@@ -752,11 +754,11 @@ function MixerDevice({ device, onChange, animState, dataset }) {
                 onChange={newL => { const balls = device.balls.map(b => b.label === group.label ? { ...b, label:newL } : b); editClear({ ...device, balls }); }} />
             </div>
             <span style={{ fontSize:10, color:"var(--text-3)" }}>×{group.count}</span>
-            <button onClick={() => { const idx = [...device.balls.map((b, i) => b.label === group.label ? i : -1)].filter(i => i >= 0).at(-1); editClear({ ...device, balls:device.balls.filter((_, i) => i !== idx) }); }}
+            <button aria-label={"Remove one " + (group.label || "ball")} onClick={() => { const idx = [...device.balls.map((b, i) => b.label === group.label ? i : -1)].filter(i => i >= 0).at(-1); editClear({ ...device, balls:device.balls.filter((_, i) => i !== idx) }); }}
               style={{ ...btnArr, padding:"0 5px", fontSize:13 }}>−</button>
-            <button onClick={() => editClear({ ...device, balls:[...device.balls, { id:uid(), label:group.label, color:group.color }] })}
+            <button aria-label={"Add one " + (group.label || "ball")} onClick={() => editClear({ ...device, balls:[...device.balls, { id:uid(), label:group.label, color:group.color }] })}
               style={{ ...btnArr, padding:"0 5px", fontSize:13 }}>+</button>
-            <button onClick={() => editClear({ ...device, balls:device.balls.filter(b => b.label !== group.label) })} style={btnX}>×</button>
+            <button aria-label={"Remove outcome " + (group.label || "ball")} onClick={() => editClear({ ...device, balls:device.balls.filter(b => b.label !== group.label) })} style={btnX}>×</button>
           </div>
         ))}
       </div>
@@ -827,9 +829,9 @@ function DeviceCard({ device, index, total, onChange, onRemove, onMove, animStat
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
         <span style={{ fontWeight:700, fontSize:13, color:"var(--text)" }}>{label}</span>
         <div style={{ display:"flex", gap:2 }}>
-          <button disabled={index === 0 || locked} onClick={() => onMove(index, -1)} style={btnArr}>←</button>
-          <button disabled={index === total - 1 || locked} onClick={() => onMove(index, 1)} style={btnArr}>→</button>
-          <button disabled={locked} onClick={onRemove} style={{ ...btnArr, color:"#e74c3c" }}>✕</button>
+          <button disabled={index === 0 || locked} onClick={() => onMove(index, -1)} style={btnArr} aria-label={"Move " + label + " left"}>←</button>
+          <button disabled={index === total - 1 || locked} onClick={() => onMove(index, 1)} style={btnArr} aria-label={"Move " + label + " right"}>→</button>
+          <button disabled={locked} onClick={onRemove} style={{ ...btnArr, color:"#e74c3c" }} aria-label={"Remove " + label}>✕</button>
         </div>
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:4 }}>
@@ -970,13 +972,13 @@ function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRe
       {/* Stage header: column name + reorder/remove */}
       <div style={{ display:"flex", alignItems:"center", gap:4 }}>
         <span style={{ fontSize:10, color:"var(--text-faint)" }}>var:</span>
-        <input value={stage.varName} disabled={locked}
+        <input value={stage.varName} disabled={locked} aria-label="Column name"
           title={nameError ? "Column names must be unique and non-blank" : undefined}
           onChange={e => onChange({ ...stage, varName:e.target.value.replace(/\s/g, "_") })}
           style={{ ...iSm, flex:1, fontFamily:"monospace", fontSize:11, borderColor: nameError ? "#ef4444" : undefined, boxShadow: nameError ? "0 0 0 1px #ef4444" : undefined }} />
-        <button disabled={index === 0 || locked} onClick={() => onMove(index, -1)} style={btnArr}>←</button>
-        <button disabled={index === total - 1 || locked} onClick={() => onMove(index, 1)} style={btnArr}>→</button>
-        <button disabled={locked} onClick={onRemove} style={{ ...btnArr, color:"#e74c3c" }}>✕</button>
+        <button disabled={index === 0 || locked} onClick={() => onMove(index, -1)} style={btnArr} aria-label={"Move column " + stage.varName + " left"}>←</button>
+        <button disabled={index === total - 1 || locked} onClick={() => onMove(index, 1)} style={btnArr} aria-label={"Move column " + stage.varName + " right"}>→</button>
+        <button disabled={locked} onClick={onRemove} style={{ ...btnArr, color:"#e74c3c" }} aria-label={"Remove column " + stage.varName}>✕</button>
       </div>
 
       {branches.map(branch => {
@@ -996,7 +998,7 @@ function StageCard({ stage, index, total, upstreamStages, nameOf, onChange, onRe
                   style={{ ...iSm, fontSize:10, padding:"2px 3px", marginLeft:"auto" }}>
                   {DTYPE_OPTS.map(([t, l]) => <option key={t} value={t}>{l}</option>)}
                 </select>
-                {!isDefault && <button disabled={locked} onClick={() => remBranch(branch.id)} style={btnX}>×</button>}
+                {!isDefault && <button disabled={locked} onClick={() => remBranch(branch.id)} style={btnX} aria-label="Remove branch">×</button>}
               </div>
             )}
             <BranchDeviceBody device={branch.device} animState={animStates[branch.device.id] || null}

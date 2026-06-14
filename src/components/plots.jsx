@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { iSm, btnX, btnNav, btnPlus, ctrlLbl } from "../lib/styles";
-import { COLORS, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
+import { colorAt, clamp, toNum, minutesToTime, colKind, collapseCats, OTHER_CAT, fitDotR, uid } from "../lib/util";
 import { numericSummary, lsFit, statLabel, statKey, computeStat, FN_OPTS, quantile } from "../lib/stats";
 import { evalExpr, validateExpr, lexExpr, aliasFor } from "../lib/expr";
 import { useContainerWidth } from "../lib/hooks";
@@ -28,8 +28,11 @@ function TrackText({ x, y, anchor = "middle", color, fontSize = 9, label, spec, 
   const tracked = trackedKeys && trackedKeys.has(statKey(spec));
   const w = String(label).length * fontSize * 0.62 + 8, h = fontSize + 5;
   const rx = anchor === "start" ? x - 4 : anchor === "end" ? x - w + 4 : x - w / 2;
+  const tip = tracked ? "Tracking " + lbl + " — activate to remove" : "Track " + lbl;
   return (
-    <g style={{ cursor:"pointer" }} onClick={e => { e.stopPropagation(); onTrackStat(spec); }}>
+    <g style={{ cursor:"pointer" }} role="button" tabIndex={0} aria-pressed={!!tracked} aria-label={tip}
+      onClick={e => { e.stopPropagation(); onTrackStat(spec); }}
+      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onTrackStat(spec); } }}>
       <title>{tracked ? "Tracking " + lbl + " — click to remove" : "Click to track " + lbl}</title>
       <rect x={rx} y={y - h + 3} width={w} height={h} rx={3}
         fill={tracked ? "var(--xsel-head)" : "var(--xsel-cell)"} stroke={tracked ? "#6366f1" : "var(--xsel-head)"} strokeWidth={1} />
@@ -45,8 +48,11 @@ function CatNum({ text, spec, dim, trackable, trackedKeys, onTrackStat, measureS
   if (measureSelect && spec) {
     const sel = !!measureRole;
     return (
-      <span data-mkey={statKey(spec)} onClick={e => { e.stopPropagation(); measureSelect(spec); }}
+      <span data-mkey={statKey(spec)} role="button" tabIndex={0} aria-pressed={sel}
+        onClick={e => { e.stopPropagation(); measureSelect(spec); }}
+        onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); measureSelect(spec); } }}
         title={sel ? "Selected as " + measureRole + " — click to deselect" : "Click to pick as A or B for the ruler difference"}
+        aria-label={(sel ? "Selected as " + measureRole + ", " : "Pick for ruler difference: ") + text}
         style={{ cursor:"pointer", padding:"0 3px", borderRadius:4, fontWeight:700,
           background: sel ? "var(--ruler-soft)" : "transparent",
           color: sel ? "var(--ruler-text)" : (dim ? "var(--text-faint)" : "var(--ruler-line)"),
@@ -59,8 +65,11 @@ function CatNum({ text, spec, dim, trackable, trackedKeys, onTrackStat, measureS
   const lbl = statLabel(spec, nameOf);
   const tracked = trackedKeys && trackedKeys.has(statKey(spec));
   return (
-    <span onClick={e => { e.stopPropagation(); onTrackStat(spec); }}
+    <span role="button" tabIndex={0} aria-pressed={!!tracked}
+      onClick={e => { e.stopPropagation(); onTrackStat(spec); }}
+      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); onTrackStat(spec); } }}
       title={tracked ? "Tracking " + lbl + " — click to remove" : "Click to track " + lbl}
+      aria-label={(tracked ? "Tracking " + lbl + ", activate to remove. Value " : "Track " + lbl + ". Value ") + text}
       style={{ cursor:"pointer", padding:"0 3px", borderRadius:4, fontWeight:700,
         background: tracked ? "var(--xsel-head)" : "transparent",
         color: tracked ? "#1e1b4b" : "var(--accent-ink)",
@@ -971,7 +980,9 @@ function Plot({ rows, headers, nameOf, xVar, yVar, setXVar, setYVar, width, onTr
         }
         // MODE 4: scatter (both numeric) or univariate numeric → SVG
         return (
-          <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
+          <svg width={W} height={H} role={trackable ? undefined : "img"}
+            aria-label={(yS ? "Scatter plot of " + nm(yVar) + " versus " + nm(xVar) : "Dot plot of " + nm(xVar)) + " — " + dots.length + (yS ? " points" : " values")}
+            style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
             {/* grid */}
             {xS.ticks.map((t, i) => <line key={"xg"+i} x1={sx(t)} y1={PT} x2={sx(t)} y2={PT + iH} stroke="var(--grid)" strokeWidth={1} />)}
             {yS && yS.ticks.map((t, i) => <line key={"yg"+i} x1={PL} y1={PT + iH - yS.scale(t)} x2={PL + iW} y2={PT + iH - yS.scale(t)} stroke="var(--grid)" strokeWidth={1} />)}
@@ -1423,10 +1434,11 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
         <div style={{ fontSize:11, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Draws</div>
         <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid var(--border)", borderRadius:8 }}>
           <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
+            <caption className="sr-only">Raw draws — one row per draw, one column per sampler variable.</caption>
             <thead>
               <tr>
                 {cols.map(c => (
-                  <th key={c} style={{ position:"sticky", top:0, background: c === xVar ? "var(--xsel-head)" : (c === yVar ? "var(--ysel-head)" : "var(--surface-2)"), color: c === "_sample" ? "var(--text-faint)" : "var(--text)", fontWeight: c === "_sample" ? 600 : 700, padding:"4px 8px", textAlign: c === "_sample" ? "right" : "left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>{c === "_sample" ? "#" : nm(c)}</th>
+                  <th key={c} scope="col" style={{ position:"sticky", top:0, background: c === xVar ? "var(--xsel-head)" : (c === yVar ? "var(--ysel-head)" : "var(--surface-2)"), color: c === "_sample" ? "var(--text-faint)" : "var(--text)", fontWeight: c === "_sample" ? 600 : 700, padding:"4px 8px", textAlign: c === "_sample" ? "right" : "left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>{c === "_sample" ? "#" : nm(c)}</th>
                 ))}
               </tr>
             </thead>
@@ -1434,7 +1446,7 @@ function SampleResults({ sampleData, varNames, varKinds, nameOf, onTrackStat, on
               {sampleData.map((row, i) => {
                 const sel = isSel(row._id);
                 return (
-                <tr key={row._id || i} data-rowid={row._id} onClick={() => toggleId(row._id)} style={{ borderBottom:"1px solid var(--border)", cursor:"pointer" }}>
+                <tr key={row._id || i} data-rowid={row._id} aria-selected={sel} onClick={() => toggleId(row._id)} style={{ borderBottom:"1px solid var(--border)", cursor:"pointer" }}>
                   {cols.map(c => (
                     <td key={c} style={{ padding:"3px 8px", color:cellColor(c), background:cellBg(c, sel), textAlign: c === "_sample" ? "right" : "left", whiteSpace:"nowrap", maxWidth:120, overflow:"hidden", textOverflow:"ellipsis" }}>{row[c]}</td>
                   ))}
@@ -1491,11 +1503,12 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
       <div style={{ fontSize:11, fontWeight:700, color:"var(--text-3)", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Data</div>
       <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid var(--border)", borderRadius:8 }}>
         <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
+          <caption className="sr-only">Dataset rows — one row per case, one column per variable.</caption>
           <thead>
             <tr>
-              <th style={{ position:"sticky", top:0, background:"var(--surface-2)", color:"var(--text-faint)", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid var(--border)" }}>#</th>
+              <th scope="col" style={{ position:"sticky", top:0, background:"var(--surface-2)", color:"var(--text-faint)", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid var(--border)" }}>#</th>
               {headers.map(h => (
-                <th key={h} style={{ position:"sticky", top:0, background:headBg(h), color:"var(--text)", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>
+                <th key={h} scope="col" style={{ position:"sticky", top:0, background:headBg(h), color:"var(--text)", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>
                   {editable ? (
                     <span style={{ display:"inline-flex", alignItems:"center", gap:2 }}>
                       <InlineEdit value={h} onChange={v => renameHeader(h, v)} style={{ fontWeight:700 }} />
@@ -1515,7 +1528,7 @@ function DataTable({ rows, headers, xVar, yVar, editable = false, onChange, sele
             {rows.map((r, i) => {
               const sel = isSel(r._id);
               return (
-              <tr key={r._id || i} data-rowid={r._id} style={{ borderBottom:"1px solid var(--border)" }}>
+              <tr key={r._id || i} data-rowid={r._id} aria-selected={selectable ? sel : undefined} style={{ borderBottom:"1px solid var(--border)" }}>
                 {/* row-number cell doubles as the select handle (clicking a data cell
                     edits it, so selection lives here to avoid clobbering inline edit) */}
                 <td onClick={selectable ? () => onToggleSelect(r._id) : undefined}
@@ -1582,11 +1595,12 @@ function CollectTable({ trackedStats, collectRows, onRemove, onRename, labelFor 
       </div>
       <div ref={scrollRef} style={{ maxHeight:300, overflow:"auto", border:"1px solid var(--border)", borderRadius:8 }}>
         <table style={{ borderCollapse:"collapse", fontSize:11, width:"100%" }}>
+          <caption className="sr-only">Collected statistics — one row per repetition, one column per tracked statistic.</caption>
           <thead>
             <tr>
-              <th style={{ position:"sticky", top:0, background:"var(--surface-2)", color:"var(--text-faint)", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid var(--border)" }}>#</th>
+              <th scope="col" style={{ position:"sticky", top:0, background:"var(--surface-2)", color:"var(--text-faint)", fontWeight:600, padding:"4px 6px", textAlign:"right", borderBottom:"1px solid var(--border)" }}>#</th>
               {trackedStats.map(s => (
-                <th key={s.id} title={titleFor ? titleFor(s) : undefined} style={{ position:"sticky", top:0, background: s.kind === "derived" ? "var(--derived-bg)" : "var(--stathdr-bg)", color:"var(--text)", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>
+                <th key={s.id} scope="col" title={titleFor ? titleFor(s) : undefined} style={{ position:"sticky", top:0, background: s.kind === "derived" ? "var(--derived-bg)" : "var(--stathdr-bg)", color:"var(--text)", fontWeight:700, padding:"4px 8px", textAlign:"left", borderBottom:"1px solid var(--border)", whiteSpace:"nowrap" }}>
                   {s.kind === "derived" && <span title="Derived column" style={{ marginRight:3 }}>ƒ</span>}
                   {editingId === s.id ? (
                     <input autoFocus value={draft}
@@ -1594,7 +1608,7 @@ function CollectTable({ trackedStats, collectRows, onRemove, onRename, labelFor 
                       onBlur={commitRename}
                       onKeyDown={e => { if (e.key === "Enter") commitRename(); else if (e.key === "Escape") setEditingId(null); }}
                       placeholder={labelFor(s)}
-                      style={{ fontFamily:"monospace", fontSize:11, width:Math.max(70, draft.length * 7 + 16), border:"1px solid #6366f1", borderRadius:3, padding:"1px 4px", outline:"none", background:"var(--surface)", color:"var(--text)" }} />
+                      style={{ fontFamily:"monospace", fontSize:11, width:Math.max(70, draft.length * 7 + 16), border:"1px solid #6366f1", borderRadius:3, padding:"1px 4px", background:"var(--surface)", color:"var(--text)" }} />
                   ) : (
                     <span style={{ fontFamily:"monospace", color: s.kind === "derived" ? "var(--derived-text)" : "var(--accent-ink)" }}>{labelFor(s)}</span>
                   )}
@@ -1616,7 +1630,7 @@ function CollectTable({ trackedStats, collectRows, onRemove, onRename, labelFor 
             ) : collectRows.map((row, i) => {
               const sel = isSel(row._id);
               return (
-              <tr key={row._id || i} data-rowid={row._id} onClick={selectable ? () => onToggleSelect(row._id) : undefined}
+              <tr key={row._id || i} data-rowid={row._id} aria-selected={selectable ? sel : undefined} onClick={selectable ? () => onToggleSelect(row._id) : undefined}
                 style={{ borderBottom:"1px solid var(--border)", cursor: selectable ? "pointer" : "default" }}>
                 <td style={{ color:"var(--text-faint)", padding:"3px 6px", textAlign:"right", background: sel ? HL : undefined }}>{i + 1}</td>
                 {trackedStats.map(s => (
@@ -1678,7 +1692,7 @@ function UniCatPlot({ rows, catVar, nameOf, R, width, showCount = true, showPct 
         {shown.map((c, ci) => {
           const cellRows = cellRowsOf(c);
           const cnt = cellRows.length;
-          const color = COLORS[ci % COLORS.length];
+          const color = colorAt(ci);
           // Each visible number is a click target: count → count of catVar=c;
           // percent → proportion catVar=c. "Other" has no clean target.
           const colOk = c !== OTHER_CAT;
@@ -1753,7 +1767,7 @@ function CatCatGrid({ rows, xVar, yVar, nameOf, R, width, showCount = true, show
 
   // Color per Y-category (rows), like the reference image
   const yColor = {};
-  yCats.forEach((yc, i) => { yColor[yc] = COLORS[i % COLORS.length]; });
+  yCats.forEach((yc, i) => { yColor[yc] = colorAt(i); });
 
   // Build grid[yc][xc] as the actual rows in each cell (not just counts), folding
   // overflow categories into "Other", so every dot is one case linkable to its row (D1).
@@ -1900,7 +1914,9 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
     const sy = v => PT + (1 - (v - lo) / (hi - lo)) * iH;
     return (
       <div style={{ width: width ? width : "100%" }}>
-        <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
+        <svg width={W} height={H} role={trackable ? undefined : "img"}
+          aria-label={"Split dot plot of " + nm(numVar) + " by " + nm(catVar) + " — " + cats.length + " groups"}
+          style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
           {/* horizontal gridlines + y-axis ticks */}
           {ticks.map((t, i) => <line key={"g"+i} x1={PL} y1={sy(t)} x2={W - PR} y2={sy(t)} stroke="var(--grid)" strokeWidth={1} />)}
           <line x1={PL} y1={PT} x2={PL} y2={PT + iH} stroke="var(--axis)" strokeWidth={1.5} />
@@ -1928,7 +1944,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
               const key = binOf(v); stacks[key] = (stacks[key] || 0) + 1;
               return { id: groupRows[di]._id, x: xData + dotR + 3 + (stacks[key] - 1) * hsp, y: sy(v) };
             });
-            const color = COLORS[gi % COLORS.length];
+            const color = colorAt(gi);
             const bx = xData - 32;                  // vertical boxplot, just left of the mean/SD cluster
             const sdMidX = xData - 5;               // ±SD runs vertically through the mean triangle
             return (
@@ -2015,7 +2031,9 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
 
   return (
     <div style={{ width: width ? width : "100%" }}>
-      <svg width={W} height={H} style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
+      <svg width={W} height={H} role={trackable ? undefined : "img"}
+        aria-label={"Split dot plot of " + nm(numVar) + " by " + nm(catVar) + " — " + cats.length + " groups"}
+        style={{ display:"block", overflow:"visible", maxWidth:"100%" }}>
         {/* vertical gridlines */}
         {ticks.map((t, i) => <line key={"g"+i} x1={sx(t)} y1={PT} x2={sx(t)} y2={H - PB} stroke="var(--grid)" strokeWidth={1} />)}
 
@@ -2039,7 +2057,7 @@ function SplitDotPlots({ rows, catVar, numVar, nameOf, R, width, isTime, orienta
             stacks[key] = (stacks[key] || 0) + 1;
             return { id: groupRows[di]._id, x, y: baseY - (stacks[key] - 1) * spacing };
           });
-          const color = COLORS[gi % COLORS.length];
+          const color = colorAt(gi);
           // Ruler snap candidates for this band (mean ring sits on the triangle; box
           // quartiles on the box; each dot is a plain constant). Skip the "Other" bucket
           // for measures (no clean spec), but its dots are still snappable constants.
